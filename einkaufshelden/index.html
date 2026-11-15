@@ -212,7 +212,7 @@ label.f small { font-weight: 400; color: var(--muted); }
   const STATUS = { offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert" };
   const DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
   // Heldenlohn: Grundlohn + Artikelzuschlag ab dem 11. Artikel + Zuschläge
-  const FEE = { base: 5, perItem: 0.3, freeItems: 10, heavy: 3, express: 3 };
+  const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2 };
   const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
   function calcFee(count, heavy, due, extra) {
     const items = Math.max(0, count - FEE.freeItems) * FEE.perItem;
