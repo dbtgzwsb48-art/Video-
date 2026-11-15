@@ -1,0 +1,655 @@
+<title>Einkaufshelden</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: sticky header with tabs; main area = receipt-style job cards in a grid, side column with hero wall + steps */
+:root {
+  --bg: #f3f5f0;
+  --surface: #ffffff;
+  --paper: #fffdf7;
+  --ink: #1b2420;
+  --muted: #5d6a63;
+  --line: #d9dfd6;
+  --accent: #2c7a4b;
+  --accent-ink: #ffffff;
+  --accent-soft: #e2f0e6;
+  --gold: #e3ad14;
+  --gold-soft: #fbf0cc;
+  --blue: #2f5fa8;
+  --blue-soft: #e3ebf7;
+  --danger: #b3412e;
+  --shadow: 0 1px 2px rgba(27,36,32,.06), 0 4px 14px rgba(27,36,32,.06);
+  --f-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121815; --surface: #1a221e; --paper: #1f2823; --ink: #e8eee9; --muted: #9aa8a0; --line: #2f3a34;
+  --accent: #5cc188; --accent-ink: #0d1a12; --accent-soft: #1e3628; --gold: #f0c443; --gold-soft: #3a3116;
+  --blue: #8db2ea; --blue-soft: #1e2a3d; --danger: #ec8a77; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #121815; --surface: #1a221e; --paper: #1f2823; --ink: #e8eee9; --muted: #9aa8a0; --line: #2f3a34;
+  --accent: #5cc188; --accent-ink: #0d1a12; --accent-soft: #1e3628; --gold: #f0c443; --gold-soft: #3a3116;
+  --blue: #8db2ea; --blue-soft: #1e2a3d; --danger: #ec8a77; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; line-height: 1.15; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+header.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line); }
+.top .wrap { display: flex; align-items: center; gap: 16px; padding-block: 10px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+.brand svg { flex: none; }
+.brand b { font-family: var(--f-display); font-weight: 800; font-size: 22px; letter-spacing: -.01em; }
+.me { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.me img { width: 26px; height: 26px; border-radius: 50%; }
+.cape { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; background: var(--gold-soft); color: var(--ink); padding: 2px 8px; border-radius: 999px; }
+
+nav.tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
+nav.tabs a { white-space: nowrap; text-decoration: none; color: var(--muted); font-weight: 600; padding: 7px 14px; border-radius: 8px; }
+nav.tabs a:hover { color: var(--ink); background: var(--bg); }
+nav.tabs a[aria-current="page"] { color: var(--accent-ink); background: var(--accent); }
+nav.tabs .count { font-family: var(--f-mono); font-size: 12px; margin-left: 4px; opacity: .8; }
+
+.intro { padding-block: 28px 8px; display: grid; gap: 6px; }
+.intro h1 { font-size: clamp(26px, 4.4vw, 40px); font-weight: 800; letter-spacing: -.02em; }
+.intro p { margin: 0; color: var(--muted); max-width: 62ch; }
+
+.notice { margin-top: 16px; padding: 12px 14px; border-radius: 10px; background: var(--gold-soft); font-size: 14px; }
+.notice.err { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; padding-block: 20px 56px; align-items: start; }
+@media (max-width: 880px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.toolbar input, .toolbar select { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); min-width: 0; }
+.toolbar input { flex: 1 1 200px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button { border: 0; background: transparent; padding: 7px 12px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
+
+/* receipt card */
+.bon { background: var(--paper); box-shadow: var(--shadow); border-radius: 4px; padding: 16px 16px 14px; display: flex; flex-direction: column; gap: 10px; position: relative; min-width: 0;
+  --tear: radial-gradient(circle at 6px 0, transparent 5px, var(--paper) 5.5px);
+}
+.bon::after { content: ""; position: absolute; left: 0; right: 0; bottom: -6px; height: 6px; background: var(--tear); background-size: 12px 6px; background-repeat: repeat-x; }
+.bon .head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+.bon .where { font-family: var(--f-mono); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); overflow-wrap: anywhere; }
+.bon h3 { font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.pill { flex: none; font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; }
+.pill.offen { background: var(--gold-soft); color: var(--ink); }
+.pill.uebernommen { background: var(--blue-soft); color: var(--blue); }
+.pill.erledigt { background: var(--accent-soft); color: var(--accent); }
+.items { list-style: none; margin: 0; padding: 8px 0; border-top: 1px dashed var(--line); border-bottom: 1px dashed var(--line); font-family: var(--f-mono); font-size: 13.5px; display: grid; gap: 4px; }
+.items li { display: flex; gap: 8px; align-items: flex-start; overflow-wrap: anywhere; }
+.items li.done span { text-decoration: line-through; color: var(--muted); }
+.items input { margin-top: 3px; accent-color: var(--accent); }
+.items .dot { color: var(--muted); }
+.meta { font-family: var(--f-mono); font-size: 12.5px; display: grid; gap: 2px; }
+.meta div { display: flex; justify-content: space-between; gap: 10px; }
+.meta dt, .meta .k { color: var(--muted); }
+.note { font-size: 13.5px; color: var(--muted); margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.people { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); align-items: center; }
+.people img { width: 20px; height: 20px; border-radius: 50%; vertical-align: -5px; margin-right: 4px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+
+.btn { border: 1px solid var(--line); background: var(--surface); padding: 8px 14px; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px; }
+.btn:hover { border-color: var(--ink); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--muted); padding-inline: 8px; }
+.btn.ghost:hover { color: var(--danger); }
+.btn[disabled] { opacity: .55; cursor: progress; }
+
+.empty { border: 1.5px dashed var(--line); border-radius: 12px; padding: 28px 20px; text-align: center; color: var(--muted); display: grid; gap: 10px; justify-items: center; }
+.empty strong { color: var(--ink); font-family: var(--f-display); font-size: 18px; }
+
+aside { display: grid; gap: 18px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 10px; }
+.panel h2 { font-size: 17px; }
+.wall { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wall li { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.wall img { width: 28px; height: 28px; border-radius: 50%; }
+.wall .n { margin-left: auto; font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
+.wall .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
+.steps b { color: var(--ink); }
+.small { font-size: 13px; color: var(--muted); margin: 0; }
+
+/* forms */
+form.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; display: grid; gap: 16px; max-width: 680px; }
+form.card h2 { font-size: 22px; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+label.f { display: grid; gap: 5px; font-weight: 600; font-size: 14px; min-width: 0; }
+label.f small { font-weight: 400; color: var(--muted); }
+.f input, .f select, .f textarea { padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-weight: 400; width: 100%; }
+.f textarea { resize: vertical; min-height: 70px; }
+.f textarea.list { font-family: var(--f-mono); min-height: 150px; font-size: 14px; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px; }
+.checks label { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; font-size: 13px; cursor: pointer; background: var(--bg); }
+.checks input { accent-color: var(--accent); }
+.form-foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.msg { font-size: 14px; color: var(--accent); }
+.msg.err { color: var(--danger); }
+
+.section-title { font-size: 20px; margin: 6px 0 12px; }
+.stack { display: grid; gap: 28px; }
+
+.helpers { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.hero-card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 4px; font-size: 13.5px; min-width: 0; }
+.hero-card .who { display: flex; gap: 8px; align-items: center; font-weight: 600; font-size: 15px; }
+.hero-card img { width: 30px; height: 30px; border-radius: 50%; }
+.hero-card .k { color: var(--muted); }
+
+@media (prefers-reduced-motion: no-preference) { .bon { transition: transform .15s ease; } .bon:hover { transform: translateY(-2px); } }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+        <path d="M9 7 L4 27 Q17 32 30 27 L25 7 Z" fill="var(--gold)"/>
+        <path d="M8 12h20l-2.4 9.5a2 2 0 0 1-1.9 1.5H12.3a2 2 0 0 1-1.9-1.5L8 12z" fill="var(--accent)"/>
+        <path d="M5 9h3l.8 3" stroke="var(--ink)" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <circle cx="13" cy="27" r="2" fill="var(--ink)"/><circle cx="23" cy="27" r="2" fill="var(--ink)"/>
+      </svg>
+      <b>Einkaufshelden</b>
+    </div>
+    <div class="me" id="me"></div>
+  </div>
+  <div class="wrap">
+    <nav class="tabs" id="tabs" aria-label="Bereiche">
+      <a href="#auftraege" data-view="auftraege">Aufträge<span class="count" id="c-open"></span></a>
+      <a href="#hilfe" data-view="hilfe">Einkauf anfragen</a>
+      <a href="#meine" data-view="meine">Meine Einkäufe</a>
+      <a href="#held" data-view="held">Held werden</a>
+      <a href="#helden" data-view="helden">Alle Helden<span class="count" id="c-heroes"></span></a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banner"></div>
+  <div id="view"></div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const VIEWS = ["auftraege", "hilfe", "meine", "held", "helden"];
+  const WINDOWS = { egal: "egal wann", vormittags: "vormittags", mittags: "mittags", nachmittags: "nachmittags", abends: "abends" };
+  const PAY = { bar: "Bar bei Übergabe", paypal: "PayPal", ueberweisung: "Überweisung", vorab: "Geld wird vorab übergeben" };
+  const STATUS = { offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert" };
+  const DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  const euro = (n) => (typeof n === "number" && isFinite(n)) ? n.toLocaleString("de-DE", { style: "currency", currency: "EUR" }) : "–";
+
+  const S = {
+    db: null, user: null, myId: null, canWrite: null,
+    requests: [], helpers: {}, profiles: {},
+    loaded: false, stale: false, error: null, dbMissing: false,
+    filter: "", show: "offen", busy: new Set(), flash: null,
+  };
+  let lastDraft = null;
+  try { lastDraft = JSON.parse(localStorage.getItem("eh-draft") || "null"); } catch (e) {}
+
+  // ---------- helpers ----------
+  const view = () => { const h = (location.hash || "").slice(1); return VIEWS.includes(h) ? h : "auftraege"; };
+  const isHero = () => !!(S.myId && S.helpers[S.myId] && S.helpers[S.myId].active !== false);
+  const prof = (id) => S.profiles[id] || null;
+  const nameOf = (id) => (id && id === S.myId) ? "Du" : ((prof(id) && prof(id).name) || "Jemand");
+  const avatarOf = (id) => (prof(id) && prof(id).avatarUrl) || "";
+  const avatar = (id) => avatarOf(id) ? `<img src="${esc(avatarOf(id))}" alt="">` : "";
+  const fmtDate = (d) => {
+    if (!d) return "flexibel";
+    const dt = new Date(d + "T12:00:00");
+    if (isNaN(dt)) return esc(d);
+    const today = new Date(); today.setHours(12, 0, 0, 0);
+    const diff = Math.round((dt - today) / 86400000);
+    if (diff === 0) return "heute";
+    if (diff === 1) return "morgen";
+    return dt.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
+  };
+  const ago = (iso) => {
+    const t = Date.parse(iso); if (!t) return "";
+    const m = Math.round((Date.now() - t) / 60000);
+    if (m < 1) return "gerade eben"; if (m < 60) return `vor ${m} Min.`;
+    const h = Math.round(m / 60); if (h < 24) return `vor ${h} Std.`;
+    return `vor ${Math.round(h / 24)} T.`;
+  };
+
+  async function resolveProfiles() {
+    if (!S.user) return;
+    const ids = new Set();
+    S.requests.forEach(r => { if (r.createdBy) ids.add(r.createdBy); if (r.helperId) ids.add(r.helperId); });
+    Object.keys(S.helpers).forEach(id => ids.add(id));
+    if (S.myId) ids.add(S.myId);
+    if (!ids.size) return;
+    try { S.profiles = await S.user.profiles([...ids]); } catch (e) {}
+  }
+
+  // ---------- rendering ----------
+  function renderHeader() {
+    const me = $("#me");
+    if (S.myId) {
+      me.innerHTML = `${avatar(S.myId)}<span>${esc((prof(S.myId) && prof(S.myId).name) || "Angemeldet")}</span>${isHero() ? '<span class="cape">Held</span>' : ""}`;
+    } else me.textContent = S.dbMissing ? "Nicht angemeldet" : "";
+    const open = S.requests.filter(r => r.status === "offen").length;
+    $("#c-open").textContent = S.loaded ? String(open) : "";
+    $("#c-heroes").textContent = S.loaded ? String(Object.values(S.helpers).filter(h => h.active !== false).length) : "";
+    document.querySelectorAll("#tabs a").forEach(a => a.setAttribute("aria-current", a.dataset.view === view() ? "page" : "false"));
+  }
+
+  function renderBanner() {
+    const b = $("#banner");
+    let html = "";
+    if (S.dbMissing) html = `<div class="notice">Melde dich bei claude.ai an, um Einkäufe zu sehen, anzufragen oder als Einkaufsheld zu helfen.</div>`;
+    else if (S.error) html = `<div class="notice err">Die Daten konnten nicht geladen werden (${esc(S.error)}). Lade die Seite später neu.</div>`;
+    else if (S.stale && !S.loaded) html = `<div class="notice">Die Aufträge sind gerade nicht erreichbar. Es geht weiter, sobald die Verbindung steht.</div>`;
+    else if (S.stale) html = `<div class="notice">Die Anzeige ist eventuell nicht mehr aktuell.</div>`;
+    else if (S.canWrite === false) html = `<div class="notice">Du kannst hier nur lesen. Bitte die Person, die dir den Link geschickt hat, dich als Mitwirkende*n einzuladen.</div>`;
+    b.innerHTML = html;
+  }
+
+  function card(r) {
+    const mineReq = r.createdBy === S.myId;
+    const mineJob = r.helperId === S.myId;
+    const items = Array.isArray(r.items) ? r.items : [];
+    const canTick = mineJob && r.status === "uebernommen";
+    const doneCount = items.filter(i => i.done).length;
+    const busy = S.busy.has(r.id) ? " disabled" : "";
+    let actions = "";
+    if (S.canWrite !== false && S.myId) {
+      if (r.status === "offen" && !mineReq) {
+        actions += isHero()
+          ? `<button class="btn primary" data-act="take" data-id="${esc(r.id)}"${busy}>Ich gehe einkaufen</button>`
+          : `<a class="btn" href="#held">Als Held anmelden, um zu helfen</a>`;
+      }
+      if (canTick) {
+        actions += `<button class="btn primary" data-act="deliver" data-id="${esc(r.id)}"${busy}>Geliefert</button>`;
+        actions += `<button class="btn" data-act="release" data-id="${esc(r.id)}"${busy}>Abgeben</button>`;
+      }
+      if (mineReq && r.status === "erledigt" && !r.thanks) {
+        actions += `<button class="btn primary" data-act="thanks" data-id="${esc(r.id)}"${busy}>Danke sagen</button>`;
+      }
+      if (mineReq && r.status !== "erledigt") {
+        actions += `<button class="btn ghost" data-act="cancel" data-id="${esc(r.id)}"${busy}>${S.confirm === r.id ? "Wirklich löschen?" : "Zurückziehen"}</button>`;
+      }
+      if (mineReq && r.status === "erledigt") {
+        actions += `<button class="btn ghost" data-act="cancel" data-id="${esc(r.id)}"${busy}>${S.confirm === r.id ? "Wirklich löschen?" : "Entfernen"}</button>`;
+      }
+    }
+    return `<article class="bon">
+      <div class="head">
+        <div class="where">${esc(r.area || "Ort offen")} · ${fmtDate(r.due)}${r.window && r.window !== "egal" ? ", " + esc(WINDOWS[r.window] || r.window) : ""}</div>
+        <span class="pill ${esc(r.status)}">${STATUS[r.status] || esc(r.status)}</span>
+      </div>
+      <h3>${esc(r.title || "Einkauf")}</h3>
+      <ul class="items">${items.map((it, i) => `<li class="${it.done ? "done" : ""}">${canTick
+        ? `<input type="checkbox" id="it-${esc(r.id)}-${i}" data-act="tick" data-id="${esc(r.id)}" data-i="${i}"${it.done ? " checked" : ""}${busy}><label for="it-${esc(r.id)}-${i}"><span>${esc(it.t)}</span></label>`
+        : `<span class="dot">${it.done ? "✓" : "·"}</span><span>${esc(it.t)}</span>`}</li>`).join("")}</ul>
+      <div class="meta">
+        <div><span class="k">Artikel</span><span>${r.status === "offen" ? items.length : `${doneCount}/${items.length}`}</span></div>
+        <div><span class="k">Budget</span><span>${typeof r.budget === "number" ? "max. " + euro(r.budget) : "nach Kassenbon"}</span></div>
+        <div><span class="k">Bezahlung</span><span>${esc(PAY[r.payment] || r.payment || "–")}</span></div>
+      </div>
+      ${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}
+      <div class="people">
+        <span>${avatar(r.createdBy)}${esc(nameOf(r.createdBy))} · ${esc(ago(r.createdAt))}</span>
+        ${r.helperId ? `<span>→ ${avatar(r.helperId)}<b>${esc(nameOf(r.helperId))}</b> kauft ein</span>` : ""}
+        ${r.thanks ? `<span class="cape">Danke erhalten</span>` : ""}
+      </div>
+      ${actions ? `<div class="actions">${actions}</div>` : ""}
+    </article>`;
+  }
+
+  function emptyBox(title, text, link) {
+    return `<div class="empty"><strong>${title}</strong><span>${text}</span>${link || ""}</div>`;
+  }
+
+  function loadingOrEmpty(title, text, link) {
+    if (!S.loaded && !S.dbMissing && !S.error) return emptyBox("Aufträge werden geladen …", "Gleich siehst du, wer in deiner Nähe Hilfe beim Einkaufen braucht.");
+    return emptyBox(title, text, link);
+  }
+
+  function sidebar() {
+    const counts = {};
+    S.requests.forEach(r => { if (r.status === "erledigt" && r.helperId) counts[r.helperId] = (counts[r.helperId] || 0) + 1; });
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    return `<aside>
+      <section class="panel">
+        <h2>Heldenwand</h2>
+        ${top.length ? `<ul class="wall">${top.map(([id, n]) => `<li>${avatar(id)}<span class="name">${esc(nameOf(id))}</span><span class="n">${n} ${n === 1 ? "Einkauf" : "Einkäufe"}</span></li>`).join("")}</ul>`
+          : `<p class="small">Hier erscheinen die Helden mit den meisten gelieferten Einkäufen.</p>`}
+      </section>
+      <section class="panel">
+        <h2>So funktioniert's</h2>
+        <ol class="steps">
+          <li><b>Liste anlegen.</b> Wer Hilfe braucht, schreibt auf, was gebraucht wird, wo und bis wann.</li>
+          <li><b>Held übernimmt.</b> Angemeldete Einkaufshelden aus der Gegend sagen zu und haken beim Einkauf ab.</li>
+          <li><b>Übergabe.</b> Ware und Kassenbon gegen Geld, wie vereinbart. Danach ein Danke.</li>
+        </ol>
+        <p class="small">Alles hier ist für alle mit dem Link sichtbar. Schreib keine Adresse oder Telefonnummer in den Auftrag; macht die Übergabe lieber persönlich aus.</p>
+      </section>
+    </aside>`;
+  }
+
+  function vAuftraege() {
+    const f = S.filter.trim().toLowerCase();
+    let list = S.requests.filter(r => S.show === "alle" ? true : r.status === S.show);
+    if (f) list = list.filter(r => [r.area, r.title, ...(r.items || []).map(i => i.t)].join(" ").toLowerCase().includes(f));
+    const body = list.length ? `<div class="grid">${list.map(card).join("")}</div>`
+      : loadingOrEmpty(f ? "Nichts gefunden" : (S.show === "offen" ? "Gerade braucht niemand Hilfe" : "Noch nichts hier"),
+          f ? "Probier einen anderen Stadtteil oder Artikel." : "Sobald jemand eine Einkaufsliste anlegt, steht sie hier.",
+          `<a class="btn primary" href="#hilfe">Eigenen Einkauf anfragen</a>`);
+    return `<section class="intro">
+        <h1>Wer braucht heute etwas aus dem Laden?</h1>
+        <p>Einkaufshelden gehen für Nachbarn einkaufen, die es gerade nicht selbst schaffen. Such dir einen Auftrag in deiner Nähe aus.</p>
+      </section>
+      <div class="layout"><div>
+        <div class="toolbar">
+          <input id="flt" type="search" placeholder="Stadtteil, PLZ oder Artikel" value="${esc(S.filter)}" aria-label="Aufträge filtern">
+          <div class="seg" role="group" aria-label="Status">
+            ${["offen", "uebernommen", "erledigt", "alle"].map(k => `<button type="button" data-show="${k}" aria-pressed="${S.show === k}">${k === "alle" ? "Alle" : STATUS[k]}</button>`).join("")}
+          </div>
+        </div>
+        ${body}
+      </div>${sidebar()}</div>`;
+  }
+
+  function vHilfe() {
+    const d = lastDraft || {};
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const disabled = (!S.myId || S.canWrite === false) ? " disabled" : "";
+    return `<section class="intro">
+        <h1>Einkauf anfragen</h1>
+        <p>Schreib deine Liste so, wie du sie auf einen Zettel schreiben würdest: ein Artikel pro Zeile, gern mit Menge und Marke.</p>
+      </section>
+      <div class="layout"><div>
+      <form class="card" id="reqForm" autocomplete="off">
+        <label class="f">Worum geht's?<input id="r-title" name="title" required maxlength="80" placeholder="Wocheneinkauf, Apotheke, Getränke …" value="${esc(d.title || "")}"></label>
+        <label class="f">Einkaufsliste <small>Ein Artikel pro Zeile</small>
+          <textarea class="list" id="r-items" name="items" required placeholder="1 l Milch (3,5 %)&#10;6 Eier, Freiland&#10;Vollkornbrot&#10;2 kg Kartoffeln, festkochend">${esc(d.items || "")}</textarea></label>
+        <div class="row">
+          <label class="f">Stadtteil oder PLZ <small>Keine genaue Adresse</small><input id="r-area" name="area" required maxlength="60" placeholder="z. B. 50823 Ehrenfeld" value="${esc(d.area || "")}"></label>
+          <label class="f">Laden <small>Optional</small><input id="r-shop" name="shop" maxlength="60" placeholder="egal, Supermarkt um die Ecke …" value="${esc(d.shop || "")}"></label>
+        </div>
+        <div class="row">
+          <label class="f">Bis wann?<input id="r-due" name="due" type="date" min="${new Date().toISOString().slice(0, 10)}" value="${esc(d.due || tomorrow)}"></label>
+          <label class="f">Tageszeit<select id="r-window" name="window">${Object.entries(WINDOWS).map(([k, v]) => `<option value="${k}"${(d.window || "egal") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+        </div>
+        <div class="row">
+          <label class="f">Budget in € <small>Optional, Obergrenze</small><input id="r-budget" name="budget" type="number" min="0" step="0.5" inputmode="decimal" placeholder="30" value="${esc(d.budget || "")}"></label>
+          <label class="f">Bezahlung<select id="r-pay" name="payment">${Object.entries(PAY).map(([k, v]) => `<option value="${k}"${(d.payment || "bar") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+        </div>
+        <label class="f">Hinweise <small>Optional, für alle sichtbar</small><textarea id="r-note" name="note" maxlength="400" placeholder="Bitte laktosefreie Milch, falls es keine gibt. Ich wohne im 3. OG ohne Aufzug.">${esc(d.note || "")}</textarea></label>
+        <div class="form-foot">
+          <button class="btn primary" type="submit"${disabled}>Auftrag veröffentlichen</button>
+          <span class="msg" id="r-msg" role="status"></span>
+        </div>
+      </form></div>${sidebar()}</div>`;
+  }
+
+  function vMeine() {
+    if (!S.myId) return `<section class="intro"><h1>Meine Einkäufe</h1></section>` + emptyBox("Nicht angemeldet", "Melde dich an, um deine Aufträge zu sehen.");
+    const mine = S.requests.filter(r => r.createdBy === S.myId);
+    const jobs = S.requests.filter(r => r.helperId === S.myId);
+    return `<section class="intro"><h1>Meine Einkäufe</h1><p>Was du angefragt hast und wofür du gerade einkaufen gehst.</p></section>
+      <div class="stack" style="padding-block: 16px 56px">
+        <section>
+          <h2 class="section-title">Ich kaufe ein für …</h2>
+          ${jobs.length ? `<div class="grid">${jobs.map(card).join("")}</div>`
+            : loadingOrEmpty("Noch kein Einsatz", isHero() ? "Such dir unter „Aufträge“ einen Einkauf in deiner Nähe aus." : "Melde dich als Einkaufsheld an, dann kannst du Aufträge übernehmen.", `<a class="btn primary" href="${isHero() ? "#auftraege" : "#held"}">${isHero() ? "Zu den Aufträgen" : "Held werden"}</a>`)}
+        </section>
+        <section>
+          <h2 class="section-title">Meine Anfragen</h2>
+          ${mine.length ? `<div class="grid">${mine.map(card).join("")}</div>`
+            : loadingOrEmpty("Du hast noch nichts angefragt", "Leg eine Einkaufsliste an, und ein Held aus deiner Gegend kümmert sich darum.", `<a class="btn primary" href="#hilfe">Einkauf anfragen</a>`)}
+        </section>
+      </div>`;
+  }
+
+  function vHeld() {
+    const h = (S.myId && S.helpers[S.myId]) || {};
+    const days = Array.isArray(h.days) ? h.days : [];
+    const disabled = (!S.myId || S.canWrite === false) ? " disabled" : "";
+    const registered = !!S.helpers[S.myId];
+    return `<section class="intro">
+        <h1>${registered ? "Dein Heldenprofil" : "Werde Einkaufsheld"}</h1>
+        <p>Sag kurz, wo und wann du unterwegs bist. Danach kannst du Einkaufslisten übernehmen und die Artikel beim Einkauf abhaken.</p>
+      </section>
+      <div class="layout"><div>
+      <form class="card" id="heroForm" autocomplete="off">
+        <div class="row">
+          <label class="f">Mein Gebiet <small>Stadtteil oder PLZ</small><input id="h-area" required maxlength="60" placeholder="z. B. Ehrenfeld, Neuehrenfeld" value="${esc(h.area || "")}"></label>
+          <label class="f">Unterwegs mit<select id="h-transport">${["zu Fuß", "Fahrrad", "Lastenrad", "Auto", "ÖPNV"].map(t => `<option${h.transport === t ? " selected" : ""}>${t}</option>`).join("")}</select></label>
+        </div>
+        <div class="f" role="group" aria-labelledby="h-days-l"><span id="h-days-l" style="font-weight:600;font-size:14px">Wann kann ich?</span>
+          <div class="checks">${DAYS.map(dd => `<label><input type="checkbox" name="day" value="${dd}"${days.includes(dd) ? " checked" : ""}>${dd}</label>`).join("")}</div>
+        </div>
+        <label class="f">Über mich <small>Optional</small><textarea id="h-note" maxlength="300" placeholder="Ich kaufe sowieso samstags bei Rewe ein und nehme gern was mit. Schwere Getränkekisten sind kein Problem.">${esc(h.note || "")}</textarea></label>
+        <label class="f" style="display:flex;gap:8px;align-items:center;font-weight:500"><input id="h-active" type="checkbox" style="width:auto"${h.active !== false ? " checked" : ""}> Ich bin gerade verfügbar</label>
+        <div class="form-foot">
+          <button class="btn primary" type="submit"${disabled}>${registered ? "Profil speichern" : "Als Held anmelden"}</button>
+          ${registered ? `<button class="btn ghost" type="button" id="h-leave"${disabled}>${S.confirm === "leave" ? "Wirklich abmelden?" : "Abmelden"}</button>` : ""}
+          <span class="msg" id="h-msg" role="status"></span>
+        </div>
+      </form></div>${sidebar()}</div>`;
+  }
+
+  function vHelden() {
+    const list = Object.entries(S.helpers).filter(([, h]) => h.active !== false);
+    const counts = {};
+    S.requests.forEach(r => { if (r.status === "erledigt" && r.helperId) counts[r.helperId] = (counts[r.helperId] || 0) + 1; });
+    return `<section class="intro"><h1>Alle Einkaufshelden</h1><p>Diese Leute haben sich angemeldet und gehen für andere einkaufen.</p></section>
+      <div style="padding-block: 16px 56px">
+      ${list.length ? `<div class="helpers">${list.map(([id, h]) => `<div class="hero-card">
+          <div class="who">${avatar(id)}<span>${esc(nameOf(id))}</span></div>
+          <div><span class="k">Gebiet:</span> ${esc(h.area || "–")}</div>
+          <div><span class="k">Mit:</span> ${esc(h.transport || "–")} · <span class="k">Tage:</span> ${esc((h.days || []).join(", ") || "flexibel")}</div>
+          <div><span class="k">Geliefert:</span> ${counts[id] || 0}</div>
+          ${h.note ? `<p class="note">${esc(h.note)}</p>` : ""}
+        </div>`).join("")}</div>`
+        : loadingOrEmpty("Noch keine Helden angemeldet", "Sei die erste Person, die für Nachbarn einkaufen geht.", `<a class="btn primary" href="#held">Held werden</a>`)}
+      </div>`;
+  }
+
+  function render() {
+    const active = document.activeElement;
+    const focusId = active && active.id;
+    const selStart = active && "selectionStart" in active ? active.selectionStart : null;
+    renderHeader(); renderBanner();
+    const v = view();
+    // don't rebuild an open form while the user types in it
+    const formKey = (S.myId || "") + "|" + (S.canWrite) + "|" + ((S.myId && S.helpers[S.myId] && S.helpers[S.myId].joinedAt) || "");
+    if ((v === "hilfe" || v === "held") && S.renderedView === v && S.formKey === formKey && $("#view form")) {
+      const btns = $("#view").querySelectorAll("button[type=submit], #h-leave");
+      btns.forEach(b => b.disabled = (!S.myId || S.canWrite === false));
+      return;
+    }
+    $("#view").innerHTML = ({ auftraege: vAuftraege, hilfe: vHilfe, meine: vMeine, held: vHeld, helden: vHelden })[v]();
+    S.renderedView = v; S.formKey = formKey;
+    if (S.flash) { const m = $(S.flash.sel); if (m) { m.textContent = S.flash.text; m.className = "msg" + (S.flash.err ? " err" : ""); } S.flash = null; }
+    if (focusId) { const el = document.getElementById(focusId); if (el && el !== document.activeElement) { el.focus(); try { if (selStart != null) el.setSelectionRange(selStart, selStart); } catch (e) {} } }
+  }
+
+  // ---------- actions ----------
+  const reqRef = (id) => S.db.doc("requests/" + id);
+  async function withBusy(id, fn) {
+    if (S.busy.has(id)) return;
+    S.busy.add(id); render();
+    try { await fn(); }
+    catch (e) { console.error(e); alertMsg(e && e.code === "invalid_argument" ? "Das durftest du hier leider nicht ändern." : "Das hat nicht geklappt. Versuch es gleich noch einmal."); }
+    finally { S.busy.delete(id); render(); }
+  }
+  function alertMsg(text) {
+    const b = $("#banner"); b.innerHTML = `<div class="notice err">${esc(text)}</div>`;
+    setTimeout(() => renderBanner(), 5000);
+  }
+
+  async function take(id) {
+    await withBusy(id, async () => {
+      const ref = reqRef(id);
+      const lease = await ref.acquire({ holder: S.myId, ttlMs: 5000 });
+      if (!lease.acquired) { alertMsg("Jemand anderes übernimmt diesen Einkauf gerade."); return; }
+      const snap = await ref.get();
+      const d = snap.exists ? snap.data() : null;
+      if (!d || d.status !== "offen" || d.helperId) { alertMsg("Dieser Einkauf wurde schon übernommen."); return; }
+      await ref.update({ status: "uebernommen", helperId: S.myId, takenAt: new Date().toISOString() });
+      location.hash = "#meine";
+    });
+  }
+
+  document.addEventListener("click", async (ev) => {
+    const showBtn = ev.target.closest("[data-show]");
+    if (showBtn) { S.show = showBtn.dataset.show; try { localStorage.setItem("eh-show", S.show); } catch (e) {} render(); return; }
+    const b = ev.target.closest("button[data-act]");
+    if (!b || !S.db) return;
+    const id = b.dataset.id, act = b.dataset.act;
+    const r = S.requests.find(x => x.id === id);
+    if (!r) return;
+    if (act === "take") return take(id);
+    if (act === "release") return withBusy(id, () => reqRef(id).update({ status: "offen", helperId: null, takenAt: null, items: (r.items || []).map(i => ({ t: i.t, done: false })) }));
+    if (act === "deliver") return withBusy(id, () => reqRef(id).update({ status: "erledigt", doneAt: new Date().toISOString() }));
+    if (act === "thanks") return withBusy(id, () => reqRef(id).update({ thanks: true }));
+    if (act === "cancel") {
+      if (S.confirm !== id) { S.confirm = id; render(); setTimeout(() => { if (S.confirm === id) { S.confirm = null; render(); } }, 4000); return; }
+      S.confirm = null;
+      return withBusy(id, () => reqRef(id).delete());
+    }
+  });
+
+  document.addEventListener("change", (ev) => {
+    const t = ev.target;
+    if (t.matches("input[data-act=tick]") && S.db) {
+      const r = S.requests.find(x => x.id === t.dataset.id); if (!r) return;
+      const items = (r.items || []).map((it, i) => i === Number(t.dataset.i) ? { t: it.t, done: t.checked } : { t: it.t, done: !!it.done });
+      withBusy(r.id, () => reqRef(r.id).update({ items }));
+    }
+  });
+
+  document.addEventListener("input", (ev) => {
+    if (ev.target.id === "flt") { S.filter = ev.target.value; const pos = ev.target.selectionStart; $("#view").innerHTML = vAuftraege(); const el = $("#flt"); el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) {} return; }
+    const f = ev.target.closest("#reqForm");
+    if (f) {
+      lastDraft = { title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shop: $("#r-shop").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, payment: $("#r-pay").value, note: $("#r-note").value };
+      try { localStorage.setItem("eh-draft", JSON.stringify(lastDraft)); } catch (e) {}
+    }
+  });
+
+  document.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const form = ev.target;
+    if (!S.db || !S.myId) return;
+    const btn = form.querySelector("button[type=submit]");
+    if (form.id === "reqForm") {
+      const msg = $("#r-msg");
+      const items = $("#r-items").value.split("\n").map(s => s.trim().replace(/^[-*•·]\s*/, "")).filter(Boolean).slice(0, 60).map(t => ({ t: t.slice(0, 120), done: false }));
+      if (!items.length) { msg.textContent = "Schreib mindestens einen Artikel auf die Liste."; msg.className = "msg err"; return; }
+      const b = parseFloat(String($("#r-budget").value).replace(",", "."));
+      const shop = $("#r-shop").value.trim();
+      const note = [$("#r-note").value.trim(), shop ? "Laden: " + shop : ""].filter(Boolean).join("\n");
+      const data = {
+        title: $("#r-title").value.trim().slice(0, 80), items,
+        area: $("#r-area").value.trim().slice(0, 60), due: $("#r-due").value || null,
+        window: $("#r-window").value, budget: isFinite(b) && b > 0 ? Math.round(b * 100) / 100 : null,
+        payment: $("#r-pay").value, note: note.slice(0, 500),
+        status: "offen", createdBy: S.myId, helperId: null, thanks: false,
+        createdAt: new Date().toISOString(),
+      };
+      btn.disabled = true; msg.textContent = "Wird veröffentlicht …"; msg.className = "msg";
+      try {
+        await S.db.collection("requests").add(data);
+        lastDraft = null; try { localStorage.removeItem("eh-draft"); } catch (e) {}
+        S.renderedView = null; S.flash = null;
+        location.hash = "#meine";
+        render();
+      } catch (e) {
+        console.error(e);
+        msg.textContent = e && e.code === "quota_exceeded" ? "Der Speicher ist voll. Bitte erledigte Aufträge entfernen." : e && e.code === "invalid_argument" ? "Du darfst hier keine Aufträge anlegen." : "Das hat nicht geklappt. Versuch es noch einmal.";
+        msg.className = "msg err"; btn.disabled = false;
+      }
+    }
+    if (form.id === "heroForm") {
+      const msg = $("#h-msg");
+      const existing = S.helpers[S.myId];
+      const data = {
+        area: $("#h-area").value.trim().slice(0, 60), transport: $("#h-transport").value,
+        days: [...form.querySelectorAll("input[name=day]:checked")].map(i => i.value),
+        note: $("#h-note").value.trim().slice(0, 300), active: $("#h-active").checked,
+        joinedAt: (existing && existing.joinedAt) || new Date().toISOString(),
+      };
+      btn.disabled = true; msg.textContent = "Wird gespeichert …"; msg.className = "msg";
+      try {
+        await S.db.doc("helpers/" + S.myId).set(data);
+        S.renderedView = null;
+        S.flash = { sel: "#h-msg", text: existing ? "Gespeichert." : "Willkommen bei den Einkaufshelden! Unter „Aufträge“ kannst du jetzt helfen." };
+        render();
+      } catch (e) {
+        console.error(e); msg.textContent = "Speichern hat nicht geklappt. Versuch es noch einmal."; msg.className = "msg err"; btn.disabled = false;
+      }
+    }
+  });
+
+  document.addEventListener("click", async (ev) => {
+    if (ev.target.id !== "h-leave" || !S.db || !S.myId) return;
+    if (S.confirm !== "leave") { S.confirm = "leave"; S.renderedView = null; render(); return; }
+    S.confirm = null;
+    try { await S.db.doc("helpers/" + S.myId).delete(); S.renderedView = null; render(); }
+    catch (e) { alertMsg("Abmelden hat nicht geklappt."); }
+  });
+
+  window.addEventListener("hashchange", () => { S.renderedView = null; S.confirm = null; render(); window.scrollTo(0, 0); });
+
+  // ---------- boot ----------
+  try { const s = localStorage.getItem("eh-show"); if (s) S.show = s; } catch (e) {}
+  render();
+
+  (async () => {
+    const [db, user] = await Promise.all([
+      window.claude ? window.claude.use("db") : null,
+      window.claude ? window.claude.use("user") : null,
+    ]);
+    S.user = user;
+    if (!db) { S.dbMissing = true; S.loaded = true; render(); return; }
+    S.db = db;
+    if (user) {
+      try { S.myId = await user.id(); } catch (e) {}
+      try { S.canWrite = await user.can("data.write"); } catch (e) {}
+    }
+    await resolveProfiles(); render();
+
+    let gotReq = false, gotHero = false;
+    const timer = setTimeout(() => { S.stale = true; render(); }, 10000);
+    const settle = () => { if (gotReq && gotHero) { clearTimeout(timer); S.stale = false; } };
+    let pend = null;
+    const refresh = () => { clearTimeout(pend); pend = setTimeout(async () => { await resolveProfiles(); render(); }, 60); };
+
+    db.collection("requests").orderBy("createdAt", "desc").limit(400).onSnapshot((snap) => {
+      S.requests = snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      if (!snap.metadata.fromCache) { gotReq = true; S.loaded = true; settle(); }
+      else if (S.requests.length) S.loaded = true;
+      refresh();
+    }, (e) => { clearTimeout(timer); S.error = e.code; S.loaded = true; render(); });
+
+    db.collection("helpers").onSnapshot((snap) => {
+      const m = {}; snap.docs.forEach(d => { m[d.id] = d.data(); });
+      S.helpers = m;
+      if (!snap.metadata.fromCache) { gotHero = true; settle(); }
+      refresh();
+    }, (e) => { clearTimeout(timer); S.error = e.code; render(); });
+  })();
+})();
+</script>
