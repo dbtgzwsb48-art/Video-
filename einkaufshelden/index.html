@@ -152,6 +152,23 @@ label.f small { font-weight: 400; color: var(--muted); }
 .hero-card img { width: 30px; height: 30px; border-radius: 50%; }
 .hero-card .k { color: var(--muted); }
 
+.lohn { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--gold-soft); border-radius: 8px; padding: 8px 10px; }
+.lohn .k { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.lohn small { display: block; font-size: 11.5px; color: var(--muted); font-family: var(--f-mono); }
+.lohn b { font-family: var(--f-display); font-size: 22px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.calc { border: 1px dashed var(--line); border-radius: 10px; padding: 12px 14px; font-family: var(--f-mono); font-size: 13.5px; display: grid; gap: 4px; background: var(--paper); }
+.calc div { display: flex; justify-content: space-between; gap: 10px; font-variant-numeric: tabular-nums; }
+.calc .muted { color: var(--muted); }
+.calc .sum { border-top: 1px dashed var(--line); padding-top: 6px; margin-top: 2px; font-weight: 600; font-size: 15px; }
+.tarif { margin: 0; display: grid; gap: 3px; font-family: var(--f-mono); font-size: 12.5px; }
+.tarif div { display: flex; justify-content: space-between; gap: 8px; }
+.tarif dt { color: var(--muted); } .tarif dd { margin: 0; font-variant-numeric: tabular-nums; }
+.earn { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.earn div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.earn b { display: block; font-family: var(--f-display); font-size: 26px; font-variant-numeric: tabular-nums; }
+.earn span { font-size: 13px; color: var(--muted); }
+.thanks-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 13px; color: var(--muted); }
+
 @media (prefers-reduced-motion: no-preference) { .bon { transition: transform .15s ease; } .bon:hover { transform: translateY(-2px); } }
 </style>
 
@@ -194,13 +211,23 @@ label.f small { font-weight: 400; color: var(--muted); }
   const PAY = { bar: "Bar bei Übergabe", paypal: "PayPal", ueberweisung: "Überweisung", vorab: "Geld wird vorab übergeben" };
   const STATUS = { offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert" };
   const DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  // Heldenlohn: Grundlohn + Artikelzuschlag ab dem 11. Artikel + Zuschläge
+  const FEE = { base: 5, perItem: 0.3, freeItems: 10, heavy: 3, express: 3 };
+  const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
+  function calcFee(count, heavy, due, extra) {
+    const items = Math.max(0, count - FEE.freeItems) * FEE.perItem;
+    const parts = { base: FEE.base, items: Math.round(items * 100) / 100, heavy: heavy ? FEE.heavy : 0, express: due && due <= todayISO() ? FEE.express : 0, extra: extra > 0 ? Math.round(extra * 100) / 100 : 0 };
+    parts.total = Math.round((parts.base + parts.items + parts.heavy + parts.express + parts.extra) * 100) / 100;
+    return parts;
+  }
+  const earned = (r) => (typeof r.fee === "number" ? r.fee : 0) + (typeof r.tip === "number" ? r.tip : 0);
   const euro = (n) => (typeof n === "number" && isFinite(n)) ? n.toLocaleString("de-DE", { style: "currency", currency: "EUR" }) : "–";
 
   const S = {
     db: null, user: null, myId: null, canWrite: null,
     requests: [], helpers: {}, profiles: {},
     loaded: false, stale: false, error: null, dbMissing: false,
-    filter: "", show: "offen", busy: new Set(), flash: null,
+    filter: "", show: "offen", sort: "neu", busy: new Set(), flash: null,
   };
   let lastDraft = null;
   try { lastDraft = JSON.parse(localStorage.getItem("eh-draft") || "null"); } catch (e) {}
@@ -263,6 +290,17 @@ label.f small { font-weight: 400; color: var(--muted); }
     b.innerHTML = html;
   }
 
+  function feeHint(r) {
+    const p = r.feeParts || {};
+    const bits = ["Grundlohn"];
+    if (p.items) bits.push("viele Artikel");
+    if (p.heavy) bits.push("schwer");
+    if (p.express) bits.push("Express");
+    if (p.extra) bits.push("Extra");
+    if (typeof r.tip === "number" && r.tip > 0) bits.push(euro(r.tip) + " Trinkgeld");
+    return bits.join(" · ");
+  }
+
   function card(r) {
     const mineReq = r.createdBy === S.myId;
     const mineJob = r.helperId === S.myId;
@@ -282,7 +320,10 @@ label.f small { font-weight: 400; color: var(--muted); }
         actions += `<button class="btn" data-act="release" data-id="${esc(r.id)}"${busy}>Abgeben</button>`;
       }
       if (mineReq && r.status === "erledigt" && !r.thanks) {
-        actions += `<button class="btn primary" data-act="thanks" data-id="${esc(r.id)}"${busy}>Danke sagen</button>`;
+        actions += `<div class="thanks-row">Danke sagen, gern mit Trinkgeld:
+          <button class="btn" data-act="thanks" data-tip="0" data-id="${esc(r.id)}"${busy}>Nur Danke</button>
+          <button class="btn primary" data-act="thanks" data-tip="2" data-id="${esc(r.id)}"${busy}>+ 2 €</button>
+          <button class="btn primary" data-act="thanks" data-tip="5" data-id="${esc(r.id)}"${busy}>+ 5 €</button></div>`;
       }
       if (mineReq && r.status !== "erledigt") {
         actions += `<button class="btn ghost" data-act="cancel" data-id="${esc(r.id)}"${busy}>${S.confirm === r.id ? "Wirklich löschen?" : "Zurückziehen"}</button>`;
@@ -297,6 +338,7 @@ label.f small { font-weight: 400; color: var(--muted); }
         <span class="pill ${esc(r.status)}">${STATUS[r.status] || esc(r.status)}</span>
       </div>
       <h3>${esc(r.title || "Einkauf")}</h3>
+      ${typeof r.fee === "number" ? `<div class="lohn"><div><span class="k">Heldenlohn</span><small>${esc(feeHint(r))}</small></div><b>${euro(earned(r))}</b></div>` : ""}
       <ul class="items">${items.map((it, i) => `<li class="${it.done ? "done" : ""}">${canTick
         ? `<input type="checkbox" id="it-${esc(r.id)}-${i}" data-act="tick" data-id="${esc(r.id)}" data-i="${i}"${it.done ? " checked" : ""}${busy}><label for="it-${esc(r.id)}-${i}"><span>${esc(it.t)}</span></label>`
         : `<span class="dot">${it.done ? "✓" : "·"}</span><span>${esc(it.t)}</span>`}</li>`).join("")}</ul>
@@ -304,12 +346,13 @@ label.f small { font-weight: 400; color: var(--muted); }
         <div><span class="k">Artikel</span><span>${r.status === "offen" ? items.length : `${doneCount}/${items.length}`}</span></div>
         <div><span class="k">Budget</span><span>${typeof r.budget === "number" ? "max. " + euro(r.budget) : "nach Kassenbon"}</span></div>
         <div><span class="k">Bezahlung</span><span>${esc(PAY[r.payment] || r.payment || "–")}</span></div>
+        ${typeof r.budget === "number" && typeof r.fee === "number" ? `<div><span class="k">Höchstens gesamt</span><span>${euro(r.budget + r.fee)}</span></div>` : ""}
       </div>
       ${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}
       <div class="people">
         <span>${avatar(r.createdBy)}${esc(nameOf(r.createdBy))} · ${esc(ago(r.createdAt))}</span>
         ${r.helperId ? `<span>→ ${avatar(r.helperId)}<b>${esc(nameOf(r.helperId))}</b> kauft ein</span>` : ""}
-        ${r.thanks ? `<span class="cape">Danke erhalten</span>` : ""}
+        ${r.thanks ? `<span class="cape">Danke${typeof r.tip === "number" && r.tip > 0 ? " + " + euro(r.tip) : ""}</span>` : ""}
       </div>
       ${actions ? `<div class="actions">${actions}</div>` : ""}
     </article>`;
@@ -325,21 +368,32 @@ label.f small { font-weight: 400; color: var(--muted); }
   }
 
   function sidebar() {
-    const counts = {};
-    S.requests.forEach(r => { if (r.status === "erledigt" && r.helperId) counts[r.helperId] = (counts[r.helperId] || 0) + 1; });
-    const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    const counts = {}, money = {};
+    S.requests.forEach(r => { if (r.status === "erledigt" && r.helperId) { counts[r.helperId] = (counts[r.helperId] || 0) + 1; money[r.helperId] = (money[r.helperId] || 0) + earned(r); } });
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1] || (money[b[0]] - money[a[0]])).slice(0, 8);
     return `<aside>
       <section class="panel">
         <h2>Heldenwand</h2>
-        ${top.length ? `<ul class="wall">${top.map(([id, n]) => `<li>${avatar(id)}<span class="name">${esc(nameOf(id))}</span><span class="n">${n} ${n === 1 ? "Einkauf" : "Einkäufe"}</span></li>`).join("")}</ul>`
+        ${top.length ? `<ul class="wall">${top.map(([id, n]) => `<li>${avatar(id)}<span class="name">${esc(nameOf(id))}</span><span class="n">${n}× · ${euro(money[id])}</span></li>`).join("")}</ul>`
           : `<p class="small">Hier erscheinen die Helden mit den meisten gelieferten Einkäufen.</p>`}
+      </section>
+      <section class="panel">
+        <h2>Heldenlohn</h2>
+        <p class="small">Jeder Einkauf bringt dem Helden einen festen Lohn. Er wird bei der Übergabe zusammen mit dem Einkauf bezahlt.</p>
+        <dl class="tarif">
+          <div><dt>Grundlohn je Einkauf</dt><dd>${euro(FEE.base)}</dd></div>
+          <div><dt>ab dem ${FEE.freeItems + 1}. Artikel, je Stück</dt><dd>+ ${euro(FEE.perItem)}</dd></div>
+          <div><dt>Schweres (Kisten, Säcke)</dt><dd>+ ${euro(FEE.heavy)}</dd></div>
+          <div><dt>Express, noch heute</dt><dd>+ ${euro(FEE.express)}</dd></div>
+          <div><dt>Extra und Trinkgeld</dt><dd>freiwillig</dd></div>
+        </dl>
       </section>
       <section class="panel">
         <h2>So funktioniert's</h2>
         <ol class="steps">
-          <li><b>Liste anlegen.</b> Wer Hilfe braucht, schreibt auf, was gebraucht wird, wo und bis wann.</li>
+          <li><b>Liste anlegen.</b> Wer Hilfe braucht, schreibt auf, was gebraucht wird, wo und bis wann. Der Heldenlohn wird automatisch berechnet.</li>
           <li><b>Held übernimmt.</b> Angemeldete Einkaufshelden aus der Gegend sagen zu und haken beim Einkauf ab.</li>
-          <li><b>Übergabe.</b> Ware und Kassenbon gegen Geld, wie vereinbart. Danach ein Danke.</li>
+          <li><b>Übergabe.</b> Ware und Kassenbon gegen den Betrag vom Bon plus Heldenlohn. Danach ein Danke, gern mit Trinkgeld.</li>
         </ol>
         <p class="small">Alles hier ist für alle mit dem Link sichtbar. Schreib keine Adresse oder Telefonnummer in den Auftrag; macht die Übergabe lieber persönlich aus.</p>
       </section>
@@ -350,23 +404,53 @@ label.f small { font-weight: 400; color: var(--muted); }
     const f = S.filter.trim().toLowerCase();
     let list = S.requests.filter(r => S.show === "alle" ? true : r.status === S.show);
     if (f) list = list.filter(r => [r.area, r.title, ...(r.items || []).map(i => i.t)].join(" ").toLowerCase().includes(f));
+    if (S.sort === "lohn") list = [...list].sort((a, b) => earned(b) - earned(a));
+    if (S.sort === "dringend") list = [...list].sort((a, b) => String(a.due || "9999").localeCompare(String(b.due || "9999")));
     const body = list.length ? `<div class="grid">${list.map(card).join("")}</div>`
       : loadingOrEmpty(f ? "Nichts gefunden" : (S.show === "offen" ? "Gerade braucht niemand Hilfe" : "Noch nichts hier"),
           f ? "Probier einen anderen Stadtteil oder Artikel." : "Sobald jemand eine Einkaufsliste anlegt, steht sie hier.",
           `<a class="btn primary" href="#hilfe">Eigenen Einkauf anfragen</a>`);
     return `<section class="intro">
         <h1>Wer braucht heute etwas aus dem Laden?</h1>
-        <p>Einkaufshelden gehen für Nachbarn einkaufen, die es gerade nicht selbst schaffen. Such dir einen Auftrag in deiner Nähe aus.</p>
+        <p>Einkaufshelden gehen für Nachbarn einkaufen, die es gerade nicht selbst schaffen, und bekommen dafür einen Heldenlohn. Such dir einen Auftrag in deiner Nähe aus.</p>
       </section>
       <div class="layout"><div>
         <div class="toolbar">
           <input id="flt" type="search" placeholder="Stadtteil, PLZ oder Artikel" value="${esc(S.filter)}" aria-label="Aufträge filtern">
+          <select id="sort" aria-label="Sortierung">
+            <option value="neu"${S.sort === "neu" ? " selected" : ""}>Neueste zuerst</option>
+            <option value="lohn"${S.sort === "lohn" ? " selected" : ""}>Bester Heldenlohn</option>
+            <option value="dringend"${S.sort === "dringend" ? " selected" : ""}>Dringendste zuerst</option>
+          </select>
           <div class="seg" role="group" aria-label="Status">
             ${["offen", "uebernommen", "erledigt", "alle"].map(k => `<button type="button" data-show="${k}" aria-pressed="${S.show === k}">${k === "alle" ? "Alle" : STATUS[k]}</button>`).join("")}
           </div>
         </div>
         ${body}
       </div>${sidebar()}</div>`;
+  }
+
+  function formFee() {
+    const val = (id) => { const el = document.getElementById(id); return el ? el.value : ""; };
+    const d = lastDraft || {};
+    const items = (document.getElementById("r-items") ? val("r-items") : (d.items || "")).split("\n").filter(l => l.trim()).length;
+    const heavyEl = document.getElementById("r-heavy");
+    const heavy = heavyEl ? heavyEl.checked : !!d.heavy;
+    const due = document.getElementById("r-due") ? val("r-due") : (d.due || "");
+    const extra = parseFloat(String(document.getElementById("r-extra") ? val("r-extra") : (d.extra || "")).replace(",", ".")) || 0;
+    return { items, p: calcFee(items, heavy, due, extra) };
+  }
+  function calcHtml() {
+    const { items, p } = formFee();
+    const line = (k, v, show = true) => show ? `<div><span class="muted">${k}</span><span>${euro(v)}</span></div>` : "";
+    return `<div><b>Heldenlohn für deinen Helden</b><span></span></div>
+      ${line("Grundlohn", p.base)}
+      ${line(`${items - FEE.freeItems} Artikel über ${FEE.freeItems} × ${euro(FEE.perItem)}`, p.items, p.items > 0)}
+      ${line("Schwere Sachen", p.heavy, p.heavy > 0)}
+      ${line("Express, noch heute", p.express, p.express > 0)}
+      ${line("Extra von dir", p.extra, p.extra > 0)}
+      <div class="sum"><span>Heldenlohn</span><span>${euro(p.total)}</span></div>
+      <div class="muted" style="font-size:12px">Zahlst du bei der Übergabe zusätzlich zum Betrag auf dem Kassenbon.</div>`;
   }
 
   function vHilfe() {
@@ -394,6 +478,11 @@ label.f small { font-weight: 400; color: var(--muted); }
           <label class="f">Budget in € <small>Optional, Obergrenze</small><input id="r-budget" name="budget" type="number" min="0" step="0.5" inputmode="decimal" placeholder="30" value="${esc(d.budget || "")}"></label>
           <label class="f">Bezahlung<select id="r-pay" name="payment">${Object.entries(PAY).map(([k, v]) => `<option value="${k}"${(d.payment || "bar") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
         </div>
+        <div class="row">
+          <label class="f" style="display:flex;gap:8px;align-items:center;font-weight:500"><input id="r-heavy" type="checkbox" style="width:auto"${d.heavy ? " checked" : ""}> Schwere Sachen dabei (Getränkekisten, Katzenstreu …)</label>
+          <label class="f">Extra-Lohn drauflegen in € <small>Optional</small><input id="r-extra" type="number" min="0" step="0.5" inputmode="decimal" placeholder="0" value="${esc(d.extra || "")}"></label>
+        </div>
+        <div class="calc" id="calc" aria-live="polite">${calcHtml()}</div>
         <label class="f">Hinweise <small>Optional, für alle sichtbar</small><textarea id="r-note" name="note" maxlength="400" placeholder="Bitte laktosefreie Milch, falls es keine gibt. Ich wohne im 3. OG ohne Aufzug.">${esc(d.note || "")}</textarea></label>
         <div class="form-foot">
           <button class="btn primary" type="submit"${disabled}>Auftrag veröffentlichen</button>
@@ -402,12 +491,32 @@ label.f small { font-weight: 400; color: var(--muted); }
       </form></div>${sidebar()}</div>`;
   }
 
+  function earnBox(jobs) {
+    const done = jobs.filter(r => r.status === "erledigt");
+    const month = todayISO().slice(0, 7);
+    const sum = (l) => l.reduce((a, r) => a + earned(r), 0);
+    const thisMonth = done.filter(r => String(r.doneAt || "").slice(0, 7) === month);
+    const pending = jobs.filter(r => r.status === "uebernommen");
+    const tips = done.reduce((a, r) => a + (typeof r.tip === "number" ? r.tip : 0), 0);
+    return `<section>
+      <h2 class="section-title">Mein Heldenlohn</h2>
+      <div class="earn">
+        <div><b>${euro(sum(thisMonth))}</b><span>verdient diesen Monat</span></div>
+        <div><b>${euro(sum(done))}</b><span>insgesamt, ${done.length} ${done.length === 1 ? "Lieferung" : "Lieferungen"}</span></div>
+        <div><b>${euro(tips)}</b><span>davon Trinkgeld</span></div>
+        <div><b>${euro(sum(pending))}</b><span>noch offen in ${pending.length} ${pending.length === 1 ? "Auftrag" : "Aufträgen"}</span></div>
+      </div>
+      <p class="small" style="margin-top:8px">Die App zählt nur mit. Das Geld bekommst du bei der Übergabe direkt von der Person, für die du einkaufst.</p>
+    </section>`;
+  }
+
   function vMeine() {
     if (!S.myId) return `<section class="intro"><h1>Meine Einkäufe</h1></section>` + emptyBox("Nicht angemeldet", "Melde dich an, um deine Aufträge zu sehen.");
     const mine = S.requests.filter(r => r.createdBy === S.myId);
     const jobs = S.requests.filter(r => r.helperId === S.myId);
     return `<section class="intro"><h1>Meine Einkäufe</h1><p>Was du angefragt hast und wofür du gerade einkaufen gehst.</p></section>
       <div class="stack" style="padding-block: 16px 56px">
+        ${jobs.length || isHero() ? earnBox(jobs) : ""}
         <section>
           <h2 class="section-title">Ich kaufe ein für …</h2>
           ${jobs.length ? `<div class="grid">${jobs.map(card).join("")}</div>`
@@ -523,7 +632,7 @@ label.f small { font-weight: 400; color: var(--muted); }
     if (act === "take") return take(id);
     if (act === "release") return withBusy(id, () => reqRef(id).update({ status: "offen", helperId: null, takenAt: null, items: (r.items || []).map(i => ({ t: i.t, done: false })) }));
     if (act === "deliver") return withBusy(id, () => reqRef(id).update({ status: "erledigt", doneAt: new Date().toISOString() }));
-    if (act === "thanks") return withBusy(id, () => reqRef(id).update({ thanks: true }));
+    if (act === "thanks") { const tip = Math.max(0, Number(b.dataset.tip) || 0); return withBusy(id, () => reqRef(id).update(tip ? { thanks: true, tip } : { thanks: true })); }
     if (act === "cancel") {
       if (S.confirm !== id) { S.confirm = id; render(); setTimeout(() => { if (S.confirm === id) { S.confirm = null; render(); } }, 4000); return; }
       S.confirm = null;
@@ -533,6 +642,8 @@ label.f small { font-weight: 400; color: var(--muted); }
 
   document.addEventListener("change", (ev) => {
     const t = ev.target;
+    if (t.id === "sort") { S.sort = t.value; render(); return; }
+    if (t.id === "r-heavy" || t.id === "r-due") { const c = $("#calc"); if (c) c.innerHTML = calcHtml(); }
     if (t.matches("input[data-act=tick]") && S.db) {
       const r = S.requests.find(x => x.id === t.dataset.id); if (!r) return;
       const items = (r.items || []).map((it, i) => i === Number(t.dataset.i) ? { t: it.t, done: t.checked } : { t: it.t, done: !!it.done });
@@ -544,7 +655,8 @@ label.f small { font-weight: 400; color: var(--muted); }
     if (ev.target.id === "flt") { S.filter = ev.target.value; const pos = ev.target.selectionStart; $("#view").innerHTML = vAuftraege(); const el = $("#flt"); el.focus(); try { el.setSelectionRange(pos, pos); } catch (e) {} return; }
     const f = ev.target.closest("#reqForm");
     if (f) {
-      lastDraft = { title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shop: $("#r-shop").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, payment: $("#r-pay").value, note: $("#r-note").value };
+      const c = $("#calc"); if (c) c.innerHTML = calcHtml();
+      lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shop: $("#r-shop").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, payment: $("#r-pay").value, note: $("#r-note").value };
       try { localStorage.setItem("eh-draft", JSON.stringify(lastDraft)); } catch (e) {}
     }
   });
@@ -559,6 +671,7 @@ label.f small { font-weight: 400; color: var(--muted); }
       const items = $("#r-items").value.split("\n").map(s => s.trim().replace(/^[-*•·]\s*/, "")).filter(Boolean).slice(0, 60).map(t => ({ t: t.slice(0, 120), done: false }));
       if (!items.length) { msg.textContent = "Schreib mindestens einen Artikel auf die Liste."; msg.className = "msg err"; return; }
       const b = parseFloat(String($("#r-budget").value).replace(",", "."));
+      const fee = calcFee(items.length, $("#r-heavy").checked, $("#r-due").value, parseFloat(String($("#r-extra").value).replace(",", ".")) || 0);
       const shop = $("#r-shop").value.trim();
       const note = [$("#r-note").value.trim(), shop ? "Laden: " + shop : ""].filter(Boolean).join("\n");
       const data = {
@@ -566,6 +679,7 @@ label.f small { font-weight: 400; color: var(--muted); }
         area: $("#r-area").value.trim().slice(0, 60), due: $("#r-due").value || null,
         window: $("#r-window").value, budget: isFinite(b) && b > 0 ? Math.round(b * 100) / 100 : null,
         payment: $("#r-pay").value, note: note.slice(0, 500),
+        fee: fee.total, feeParts: { base: fee.base, items: fee.items, heavy: fee.heavy, express: fee.express, extra: fee.extra },
         status: "offen", createdBy: S.myId, helperId: null, thanks: false,
         createdAt: new Date().toISOString(),
       };
