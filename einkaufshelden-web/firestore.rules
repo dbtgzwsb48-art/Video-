@@ -1,0 +1,127 @@
+rules_version = '2';
+
+// Sicherheitsregeln für Einkaufshelden.
+// Grundsatz: Nur angemeldete Mitglieder lesen. Jede Änderung ist genau auf den
+// Schritt im Ablauf beschränkt, den die jeweilige Person machen darf.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function isMe(id) { return signedIn() && uid() == id; }
+    function newData() { return request.resource.data; }
+    function oldData() { return resource.data; }
+    function changedOnly(keys) { return newData().diff(oldData()).affectedKeys().hasOnly(keys); }
+    function text(v, minLen, maxLen) { return v is string && v.size() >= minLen && v.size() <= maxLen; }
+    function isHelper() { return exists(/databases/$(database)/documents/helpers/$(uid())); }
+    function hasProfile() { return exists(/databases/$(database)/documents/users/$(uid())); }
+
+    // Mindest-Heldenlohn, muss zu FEE.base in public/app.js passen.
+    function MIN_FEE() { return 3; }
+
+    // ---------- Profile ----------
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create, update: if isMe(userId)
+        && newData().keys().hasOnly(['name', 'acceptedTerms', 'createdAt'])
+        && text(newData().name, 2, 40)
+        && newData().acceptedTerms == true;
+      allow delete: if isMe(userId);
+    }
+
+    // ---------- Heldenprofile ----------
+    match /helpers/{userId} {
+      allow read: if signedIn();
+      allow create, update: if isMe(userId) && hasProfile()
+        && newData().keys().hasOnly(['area', 'transport', 'days', 'note', 'active', 'adult', 'joinedAt'])
+        && text(newData().area, 1, 60)
+        && text(newData().transport, 1, 20)
+        && newData().days is list && newData().days.size() <= 7
+        && text(newData().note, 0, 300)
+        && newData().active is bool
+        && newData().adult == true;
+      allow delete: if isMe(userId);
+    }
+
+    // ---------- Aufträge ----------
+    match /requests/{reqId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn() && hasProfile()
+        && newData().keys().hasOnly(['title', 'items', 'area', 'due', 'window', 'budget', 'payment', 'note',
+                                     'fee', 'feeParts', 'status', 'createdBy', 'helperId', 'thanks', 'createdAt'])
+        && newData().createdBy == uid()
+        && newData().status == 'offen'
+        && newData().helperId == null
+        && newData().thanks == false
+        && newData().createdAt == request.time
+        && text(newData().title, 1, 80)
+        && text(newData().area, 1, 60)
+        && text(newData().note, 0, 500)
+        && newData().items is list && newData().items.size() >= 1 && newData().items.size() <= 60
+        && newData().fee is number && newData().fee >= MIN_FEE() && newData().fee <= 100
+        && (newData().budget == null || (newData().budget is number && newData().budget >= 0 && newData().budget <= 1000))
+        && newData().payment in ['bar', 'paypal', 'ueberweisung', 'vorab']
+        && newData().window in ['egal', 'vormittags', 'mittags', 'nachmittags', 'abends'];
+
+      allow update: if signedIn() && (
+        // 1. Ein angemeldeter Held übernimmt einen offenen Auftrag (nicht den eigenen)
+        (oldData().status == 'offen' && oldData().helperId == null
+          && oldData().createdBy != uid() && isHelper()
+          && newData().status == 'uebernommen' && newData().helperId == uid()
+          && newData().takenAt == request.time
+          && changedOnly(['status', 'helperId', 'takenAt']))
+
+        // 2. Der Held hakt Artikel ab (Anzahl bleibt gleich)
+        || (oldData().status == 'uebernommen' && oldData().helperId == uid()
+          && newData().status == 'uebernommen'
+          && newData().items is list && newData().items.size() == oldData().items.size()
+          && changedOnly(['items']))
+
+        // 3. Der Held meldet „Geliefert“
+        || (oldData().status == 'uebernommen' && oldData().helperId == uid()
+          && newData().status == 'erledigt' && newData().doneAt == request.time
+          && changedOnly(['status', 'doneAt']))
+
+        // 4. Der Held gibt den Auftrag zurück
+        || (oldData().status == 'uebernommen' && oldData().helperId == uid()
+          && newData().status == 'offen' && newData().helperId == null && newData().takenAt == null
+          && newData().items.size() == oldData().items.size()
+          && changedOnly(['status', 'helperId', 'takenAt', 'items']))
+
+        // 5. Die anfragende Person sagt Danke, optional mit Trinkgeld (max. 50 €)
+        || (oldData().status == 'erledigt' && oldData().createdBy == uid() && oldData().thanks == false
+          && newData().thanks == true
+          && (!('tip' in newData()) || (newData().tip is number && newData().tip >= 0 && newData().tip <= 50))
+          && changedOnly(['thanks', 'tip']))
+      );
+
+      // Eigene Aufträge löschen, solange nicht gerade jemand dafür einkauft
+      allow delete: if signedIn() && oldData().createdBy == uid() && oldData().status != 'uebernommen';
+
+      // ---------- Privater Übergabe-Chat ----------
+      match /messages/{msgId} {
+        function req() { return get(/databases/$(database)/documents/requests/$(reqId)).data; }
+        function isParty() { return signedIn() && (req().createdBy == uid() || req().helperId == uid()); }
+        allow read: if isParty();
+        allow create: if isParty() && req().helperId != null
+          && newData().keys().hasOnly(['from', 'text', 'at'])
+          && newData().from == uid()
+          && text(newData().text, 1, 1000)
+          && newData().at == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    // ---------- Meldungen (nur anlegen, lesen nur in der Firebase-Konsole) ----------
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && newData().keys().hasOnly(['by', 'requestId', 'reason', 'at'])
+        && newData().by == uid()
+        && text(newData().requestId, 1, 100)
+        && text(newData().reason, 1, 500)
+        && newData().at == request.time;
+      allow read, update, delete: if false;
+    }
+  }
+}

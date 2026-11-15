@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Einkaufshelden</title>
+<meta name="description" content="Nachbarn gehen für Nachbarn einkaufen. Einkaufsliste anlegen, ein Einkaufsheld aus deiner Gegend übernimmt und bekommt einen fairen Heldenlohn.">
+<meta name="theme-color" content="#2c7a4b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preload" href="fonts/figtree-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#auftraege" style="text-decoration:none;color:inherit">
+      <img src="icons/icon.svg" width="34" height="34" alt="">
+      <b>Einkaufshelden</b>
+    </a>
+    <button class="btn install" id="installBtn" type="button">App installieren</button>
+    <div class="me" id="me"></div>
+  </div>
+  <div class="wrap" id="tabsWrap" hidden>
+    <nav class="tabs" id="tabs" aria-label="Bereiche">
+      <a href="#auftraege" data-view="auftraege">Aufträge<span class="count" id="c-open"></span></a>
+      <a href="#hilfe" data-view="hilfe">Einkauf anfragen</a>
+      <a href="#meine" data-view="meine">Meine Einkäufe</a>
+      <a href="#held" data-view="held">Held werden</a>
+      <a href="#helden" data-view="helden">Alle Helden<span class="count" id="c-heroes"></span></a>
+      <a href="#konto" data-view="konto">Konto</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="banner"></div>
+  <div id="view"><p class="small" style="padding-block:40px">Einkaufshelden wird geladen …</p></div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span>© Einkaufshelden</span>
+    <a href="impressum.html">Impressum</a>
+    <a href="datenschutz.html">Datenschutz</a>
+    <a href="agb.html">Nutzungsbedingungen</a>
+  </div>
+</footer>
+
+<dialog class="chat" id="chat">
+  <div class="chat-inner">
+    <div class="chat-head"><h2 id="chatTitle">Nachrichten</h2><button class="btn ghost" type="button" id="chatClose">Schließen</button></div>
+    <div class="chat-log" id="chatLog" aria-live="polite"></div>
+    <p class="chat-hint">Nur ihr beide seht diese Nachrichten. Hier könnt ihr Adresse, Uhrzeit und Übergabe absprechen.</p>
+    <form class="chat-form" id="chatForm">
+      <textarea id="chatText" maxlength="1000" placeholder="Nachricht schreiben …" aria-label="Nachricht"></textarea>
+      <button class="btn primary" type="submit">Senden</button>
+    </form>
+  </div>
+</dialog>
+
+<noscript><p class="wrap">Bitte aktiviere JavaScript, um Einkaufshelden zu nutzen.</p></noscript>
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "einkaufshelden",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "firebase emulators:start",
+    "test": "firebase emulators:exec --only firestore \"node --test tests/*.test.js\"",
+    "deploy": "firebase deploy"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.0",
+    "firebase": "12.3.0",
+    "firebase-tools": "^14.0.0"
+  }
+}
