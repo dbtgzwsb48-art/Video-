@@ -1,13 +1,12 @@
-// Trage hier die Daten aus der Firebase-Konsole ein:
-// Projekteinstellungen → Allgemein → Meine Apps → Web-App → „SDK-Einrichtung und -Konfiguration“ → Config.
+// Zugangsdaten des Firebase-Projekts „einkaufshelden“.
 // Diese Werte sind nicht geheim. Geschützt werden die Daten durch firestore.rules.
 export const firebaseConfig = {
-  apiKey: "HIER_API_KEY_EINTRAGEN",
-  authDomain: "DEINE-PROJEKT-ID.firebaseapp.com",
-  projectId: "DEINE-PROJEKT-ID",
-  storageBucket: "DEINE-PROJEKT-ID.firebasestorage.app",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:0000000000000000000000",
+  apiKey: "AIzaSyAE7NQdApjSM3jjfcCBAuGZNiGuVg-vvXo",
+  authDomain: "einkaufshelden.firebaseapp.com",
+  projectId: "einkaufshelden",
+  storageBucket: "einkaufshelden.firebasestorage.app",
+  messagingSenderId: "841101406784",
+  appId: "1:841101406784:web:ef25fce1b5a8229208a5a5",
 };
 
 // Für Push-Benachrichtigungen aufs Handy: Projekteinstellungen → Cloud Messaging → Web-Push-Zertifikate → Schlüsselpaar generieren.
