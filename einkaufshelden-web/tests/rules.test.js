@@ -33,7 +33,7 @@ beforeEach(async () => {
   await assertSucceeds(setDoc(doc(db(ANNA), "requests", "r1"), request()));
   await asServer(async (fs) => {
     // Was sonst die Server-Funktionen tun: Zahlung bestätigt, Ben hat ein Auszahlungskonto
-    await updateDoc(doc(fs, "requests", "r1"), { status: "offen", paid: true, captured: false, transferId: null, paymentIntent: "pi_1" });
+    await updateDoc(doc(fs, "requests", "r1"), { status: "offen", paid: true, paidAt: new Date(), captured: false, transferId: null, paymentIntent: "pi_1" });
     await setDoc(doc(fs, "payoutStatus", BEN), { ready: true });
     // Betreiber wird wie in der Anleitung von Hand angelegt
     await setDoc(doc(fs, "admins", CHEF), { since: "2026-11-16" });
@@ -181,7 +181,7 @@ test("Lieferadresse: nur Kunde, übernehmender Held und Betreiber sehen sie", as
   await assertSucceeds(getDoc(doc(db(ANNA), "requests", "a1", "private", "address")));
   await assertFails(getDoc(doc(db(BEN), "requests", "a1", "private", "address")));   // noch nicht übernommen
   await assertFails(getDoc(doc(db(CARO), "requests", "a1", "private", "address")));
-  await asServer((fs) => updateDoc(doc(fs, "requests", "a1"), { status: "offen", paid: true, captured: false, transferId: null }));
+  await asServer((fs) => updateDoc(doc(fs, "requests", "a1"), { status: "offen", paid: true, paidAt: new Date(), captured: false, transferId: null }));
   await assertSucceeds(updateDoc(doc(db(BEN), "requests", "a1"), { status: "uebernommen", helperId: BEN, takenAt: serverTimestamp() }));
   await assertSucceeds(getDoc(doc(db(BEN), "requests", "a1", "private", "address")));
   await assertSucceeds(getDoc(doc(db(CHEF), "requests", "a1", "private", "address")));
@@ -207,17 +207,27 @@ test("Bewertung: nur der Kunde, nur nach Lieferung, nur einmal, 1–5 Sterne", a
   await assertSucceeds(getDoc(doc(db(CARO), "ratings", "r1")));
 });
 
-test("Reklamation: nur der Kunde, nur vor der Bestätigung, Betrag begrenzt", async () => {
-  const disp = (amount, text = "Die Eier waren kaputt.") => ({ dispute: { text, amount, status: "offen", at: serverTimestamp() } });
+test("Reklamation: nur der Kunde, nur vor der Bestätigung, Text privat, Betrag begrenzt", async () => {
+  const disp = (amount) => ({ dispute: { amount, status: "offen", at: serverTimestamp() } });
+  const txt = (uid, text = "Die Eier waren kaputt.") => setDoc(doc(db(uid), "requests", "r1", "private", "dispute"), { text });
   await assertSucceeds(updateDoc(doc(db(BEN), "requests", "r1"), { status: "uebernommen", helperId: BEN, takenAt: serverTimestamp() }));
-  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), disp(2)));                 // noch nicht geliefert
+  await assertFails(txt(ANNA));                                                            // noch nicht geliefert
   await assertSucceeds(updateDoc(doc(db(BEN), "requests", "r1"), deliver(24.5)));
-  await assertFails(updateDoc(doc(db(BEN), "requests", "r1"), disp(2)));                  // nicht der Held
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), disp(2)));                 // ohne Text geht nicht
+  await assertFails(txt(BEN));                                                             // nicht der Held
+  await assertSucceeds(txt(ANNA));
+  await assertFails(getDoc(doc(db(CARO), "requests", "r1", "private", "dispute")));       // privat
+  await assertSucceeds(getDoc(doc(db(BEN), "requests", "r1", "private", "dispute")));
   await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), disp(100)));               // mehr als bezahlt
-  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { dispute: { text: "kaputt!", amount: 2, status: "erstattet", at: serverTimestamp() } }));
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { dispute: { amount: 2, status: "erstattet", at: serverTimestamp() } }));
   await assertSucceeds(updateDoc(doc(db(ANNA), "requests", "r1"), disp(2)));
   await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { thanks: true }));        // erst klären
-  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), disp(5, "Noch was anderes")));
+  await assertFails(txt(ANNA, "Noch was anderes"));                                       // Text nicht nachträglich ändern
+});
+
+test("Alte Aufträge (Reservierung bald abgelaufen) kann man nicht mehr übernehmen", async () => {
+  await asServer((fs) => updateDoc(doc(fs, "requests", "r1"), { paidAt: new Date(Date.now() - 5 * 86400000) }));
+  await assertFails(updateDoc(doc(db(BEN), "requests", "r1"), { status: "uebernommen", helperId: BEN, takenAt: serverTimestamp() }));
 });
 
 test("Benachrichtigungen: nur das eigene Postfach, nur als gelesen markieren", async () => {

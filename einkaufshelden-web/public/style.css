@@ -330,3 +330,6 @@ form.dispute { display: grid; gap: 8px; width: 100%; padding: 10px; border: 1px 
 .dispute-card { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
 .dispute-card p { margin: 0; }
 form.resolve { align-items: flex-end; }
+
+.toolbar .near { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.toolbar .near input { accent-color: var(--accent); min-width: 0; flex: none; }

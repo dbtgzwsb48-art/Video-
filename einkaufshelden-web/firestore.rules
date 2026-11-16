@@ -85,6 +85,8 @@ service cloud.firestore {
         // 1. Ein angemeldeter Held übernimmt einen offenen Auftrag (nicht den eigenen)
         (oldData().status == 'offen' && oldData().helperId == null
           && oldData().createdBy != uid() && isHelper() && payoutReady()
+          // Kartenreservierungen halten ca. 7 Tage: nur Aufträge übernehmen, die höchstens 4 Tage bezahlt sind
+          && request.time < oldData().paidAt + duration.value(4, 'd')
           && newData().status == 'uebernommen' && newData().helperId == uid()
           && newData().takenAt == request.time
           && changedOnly(['status', 'helperId', 'takenAt']))
@@ -122,9 +124,9 @@ service cloud.firestore {
         // 7. … oder meldet ein Problem, solange noch nicht bestätigt und ausgezahlt
         || (oldData().status == 'erledigt' && oldData().createdBy == uid() && oldData().thanks == false
           && oldData().get('dispute', null) == null && oldData().get('transferId', null) == null
-          && newData().dispute.keys().hasOnly(['text', 'amount', 'status', 'at'])
+          && newData().dispute.keys().hasOnly(['amount', 'status', 'at'])
           && newData().dispute.status == 'offen'
-          && text(newData().dispute.text, 5, 500)
+          && exists(/databases/$(database)/documents/requests/$(reqId)/private/dispute)
           && newData().dispute.amount is number && newData().dispute.amount >= 0
           && newData().dispute.amount <= oldData().receiptTotal + oldData().fee + oldData().get('tip', 0)
           && newData().dispute.at == request.time
@@ -145,6 +147,11 @@ service cloud.firestore {
         allow create, update: if signedIn() && docId == 'address'
           && order().createdBy == uid() && order().status == 'zahlung_offen'
           && validAddress(newData());
+        // Text einer Reklamation: einmal anlegen, nach der Lieferung, vor der Auszahlung
+        allow create: if signedIn() && docId == 'dispute'
+          && order().createdBy == uid() && order().status == 'erledigt'
+          && order().get('transferId', null) == null && order().get('dispute', null) == null
+          && newData().keys().hasOnly(['text']) && text(newData().text, 5, 500);
         allow delete: if false;
       }
 

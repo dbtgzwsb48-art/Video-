@@ -255,7 +255,8 @@ export const onRequestUpdated = onDocumentUpdated({ document: "requests/{id}", s
   if (after.onTheWay && !before.onTheWay) await notify([after.createdBy], "Dein Einkauf ist unterwegs", `${await userName(after.helperId)} ist auf dem Weg zu dir.`);
   if (after.status === "abgelaufen" && before.status !== "abgelaufen") await notify([after.createdBy], "Bestellung abgelaufen", `Für ${nr} hat sich leider niemand gefunden. Es wurde nichts abgebucht.`);
   if (after.dispute && !before.dispute) {
-    await notify(await admins(), "Neue Reklamation", `${nr}: ${String(after.dispute.text).slice(0, 80)}`, "#betreiber");
+    const d = await db.doc(`requests/${id}/private/dispute`).get();
+    await notify(await admins(), "Neue Reklamation", `${nr}: ${String((d.exists && d.data().text) || "").slice(0, 80)}`, "#betreiber");
     await notify([after.helperId], "Kunde meldet ein Problem", `Bei ${nr} gibt es eine Rückfrage. Die Auszahlung wartet, bis sie geklärt ist.`);
   }
   // Held hat „Geliefert“ gemeldet → abbuchen
@@ -304,6 +305,16 @@ export const hourlyJobs = onSchedule({ schedule: "every 60 minutes", timeZone: "
     if (readyForCapture(doc.data())) await capturePayment(doc.id);
     if (readyForRelease((await doc.ref.get()).data())) await releasePayment(doc.id);
   }
+  // Nie bezahlte Bestellungen nach 2 Tagen aufräumen
+  const unpaid = await db.collection("requests").where("status", "==", "zahlung_offen").limit(200).get();
+  for (const doc of unpaid.docs) {
+    const c = doc.data().createdAt;
+    if (c && Date.now() - c.toMillis() > 2 * 86400 * 1000) await doc.ref.delete();
+  }
+  // Gelesene Benachrichtigungen nach 30 Tagen löschen
+  const old = await db.collection("notifications").where("read", "==", true).where("at", "<", new Date(Date.now() - 30 * 86400 * 1000)).limit(400).get();
+  if (!old.empty) { const b = db.batch(); old.docs.forEach(d => b.delete(d.ref)); await b.commit(); }
+
   const open = await db.collection("requests").where("status", "==", "offen").limit(200).get();
   for (const doc of open.docs) {
     const r = doc.data();

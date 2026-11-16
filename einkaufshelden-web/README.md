@@ -23,7 +23,8 @@ Sie nutzt **Firebase** von Google (Anmeldung, Datenbank, Hosting, Server-Funktio
 - **Bezahlen in der App** per Karte, Apple Pay, Google Pay u. a. über Stripe
 - **Live-Status** für den Kunden: Bezahlt → Held gefunden → Kauft ein → Unterwegs → Geliefert
 - Mitglied werden ab 10 Jahren (unter 18 mit Einverständnis der Eltern)
-- Als Held anmelden (nur ab 18), Auszahlungskonto einrichten, Aufträge übernehmen, Artikel abhaken,
+- Als Held anmelden (nur ab 18), Auszahlungskonto einrichten, **Aufträge selbst aussuchen** (Filter „Nur in meiner Nähe“),
+  übernehmen, Artikel abhaken,
   „Bin unterwegs“ und „Geliefert“ mit Kassenbon-Betrag melden, Auftrag abgeben
 - Automatische Auszahlung an den Helden (Kassenbon + Heldenlohn) nach Bestätigung oder spätestens 72 Stunden
 - **Privater Übergabe-Chat:** Nur Auftraggeber und Held sehen ihn, dort wird die Adresse ausgetauscht.
@@ -36,7 +37,7 @@ Sie nutzt **Firebase** von Google (Anmeldung, Datenbank, Hosting, Server-Funktio
 Die Sicherheitsregeln in `firestore.rules` sorgen dafür, dass niemand fremde Aufträge ändern,
 sich selbst mehr Lohn geben, die Bezahlung überspringen, einen zu hohen Kassenbon eintragen oder fremde Chats
 lesen kann. Lieferadressen sieht nur der übernehmende Held. Zahlungsdaten schreibt nur der Server.
-Das ist mit 29 automatischen Tests abgesichert (`npm test`).
+Das ist mit 30 automatischen Tests abgesichert (`npm test`).
 
 ## So läuft das Geld
 

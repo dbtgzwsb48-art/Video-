@@ -134,6 +134,7 @@ try { lastDraft = JSON.parse(localStorage.getItem("eh-draft") || "null"); } catc
 try { const s = localStorage.getItem("eh-show"); if (s) S.show = s; } catch (e) {}
 try { const c = JSON.parse(localStorage.getItem("eh-cart") || "null"); if (c && Array.isArray(c.items)) S.cart = c; } catch (e) {}
 try { S.plz = localStorage.getItem("eh-plz") || ""; } catch (e) {}
+try { const n = localStorage.getItem("eh-near"); if (n) S.nearOnly = n === "1"; } catch (e) {}
 const saveCart = () => { try { localStorage.setItem("eh-cart", JSON.stringify(S.cart)); } catch (e) {} };
 
 const shopFromHash = () => { const m = /^#laden-([a-z0-9-]+)$/.exec(location.hash || ""); return m ? shopBySlug(m[1]) : null; };
@@ -288,6 +289,21 @@ async function loadAddress(id) {
   S.renderedView = null; render();
 }
 
+// Text einer Reklamation liegt privat unter requests/{id}/private/dispute
+const disputeTexts = {};
+function disputeText(id) {
+  if (disputeTexts[id] === undefined) {
+    disputeTexts[id] = null;
+    getDoc(doc(db, "requests", id, "private", "dispute")).then(x => { disputeTexts[id] = x.exists() ? x.data().text : ""; S.renderedView = null; render(); }).catch(() => { disputeTexts[id] = ""; });
+  }
+  return disputeTexts[id] ? `„${esc(disputeTexts[id])}“` : "";
+}
+// Kartenreservierung: übernehmen bis 4 Tage nach Bezahlung, liefern bis 6 Tage danach
+const DAY = 86400000;
+const paidMs = (r) => { const d = toDate(r.paidAt); return d && !isNaN(d) ? d.getTime() : null; };
+const takeable = (r) => { const p = paidMs(r); return !p || Date.now() < p + 4 * DAY; };
+const deliverBy = (r) => { const p = paidMs(r); return p ? new Date(p + 6 * DAY).toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" }) : null; };
+
 function card(r) {
   const mineReq = r.createdBy === S.myId;
   const mineJob = r.helperId === S.myId;
@@ -299,6 +315,7 @@ function card(r) {
   let actions = "";
   if (r.status === "offen" && !mineReq) {
     actions += !isHero() ? `<a class="btn" href="#held">Als Held anmelden, um zu helfen</a>`
+      : !takeable(r) ? `<span class="small">Zu alt zum Übernehmen</span>`
       : S.payoutReady ? `<button class="btn primary" data-act="take" data-id="${id}"${busy}>Ich gehe einkaufen</button>`
       : `<a class="btn" href="#held">Erst Auszahlungskonto einrichten</a>`;
   }
@@ -348,7 +365,7 @@ function card(r) {
   if (!mineReq && !mineJob) actions += `<button class="btn ghost" data-act="report" data-id="${id}"${busy}>${S.confirm === "rep-" + r.id ? "Wirklich melden?" : "Melden"}</button>`;
 
   const disputeNote = r.dispute && (mineReq || mineJob || S.isAdmin)
-    ? `<p class="note dispute-note"><b>Reklamation ${r.dispute.status === "offen" ? "wird geprüft" : r.dispute.status === "erstattet" ? `erledigt: ${euro(r.dispute.refund)} erstattet` : "geprüft: keine Erstattung"}.</b> „${esc(r.dispute.text)}“</p>` : "";
+    ? `<p class="note dispute-note"><b>Reklamation ${r.dispute.status === "offen" ? "wird geprüft" : r.dispute.status === "erstattet" ? `erledigt: ${euro(r.dispute.refund)} erstattet` : "geprüft: keine Erstattung"}.</b> ${disputeText(r.id)}</p>` : "";
   const hint = mineReq && r.status === "zahlung_offen" ? `<p class="note">Bezahl den Auftrag, dann sehen ihn die Helden. Auf deiner Karte wird zunächst nur der Höchstbetrag reserviert.</p>`
     : mineReq && r.status === "abgelaufen" ? `<p class="note">Leider hat niemand rechtzeitig übernommen. Die Reservierung auf deiner Karte ist aufgehoben, es wurde nichts abgebucht.</p>`
     : mineJob && r.status === "erledigt" ? `<p class="note">${r.transferId ? `${euro(r.transferredAmount)} an dich ausgezahlt.` : r.transferError ? "Auszahlung verzögert – prüfe dein Auszahlungskonto." : `Wird ausgezahlt, sobald ${esc(nameOf(r.createdBy))} den Erhalt bestätigt, spätestens nach 72 Stunden.`}</p>` : "";
@@ -373,6 +390,7 @@ function card(r) {
     </div>
     ${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}
     ${mineJob && r.status === "uebernommen" ? addressBox(r.id) : ""}
+    ${mineJob && r.status === "uebernommen" && deliverBy(r) ? `<p class="note"><b>Bitte spätestens ${deliverBy(r)} liefern</b>, sonst kann die Bezahlung nicht mehr abgebucht werden.</p>` : ""}
     ${(mineJob || r.status === "offen") && r.substitutes ? `<p class="note"><b>${esc(SUBST[r.substitutes] || "")}</b>${r.substitutes === "rueckfrage" ? " – frag im Chat nach, wenn etwas fehlt." : ""}</p>` : ""}
     ${disputeNote}
     ${myRating ? `<p class="note">Deine Bewertung: <span class="stars">${"★".repeat(myRating.stars)}${"☆".repeat(5 - myRating.stars)}</span>${myRating.text ? " – „" + esc(myRating.text) + "“" : ""}</p>` : ""}
@@ -533,12 +551,15 @@ function vLaden(shop) {
 function vAuftraege() {
   const f = S.filter.trim().toLowerCase();
   let list = S.requests.filter(r => S.show === "alle" ? ["offen", "uebernommen", "erledigt"].includes(r.status) : r.status === S.show);
+  const myZips = (String((S.helpers[S.myId] || {}).area || "").match(/[0-9]{5}/g) || []).map(z => z.slice(0, 3));
+  const nearOnly = S.nearOnly !== false && myZips.length > 0;
+  if (nearOnly) list = list.filter(r => myZips.includes(((String(r.area || "").match(/[0-9]{5}/) || [""])[0]).slice(0, 3)) || r.helperId === S.myId);
   if (f) list = list.filter(r => [r.area, r.title, ...(r.shops || []), ...(r.items || []).map(i => i.t)].join(" ").toLowerCase().includes(f));
   if (S.sort === "lohn") list = [...list].sort((a, b) => earned(b) - earned(a));
   if (S.sort === "dringend") list = [...list].sort((a, b) => String(a.due || "9999").localeCompare(String(b.due || "9999")));
   const body = list.length ? `<div class="grid">${list.map(card).join("")}</div>`
     : loadingOrEmpty(f ? "Nichts gefunden" : (S.show === "offen" ? "Gerade braucht niemand Hilfe" : "Noch nichts hier"),
-        f ? "Probier einen anderen Stadtteil oder Artikel." : "Sobald jemand eine Einkaufsliste anlegt, steht sie hier.",
+        f ? "Probier einen anderen Stadtteil oder Artikel." : nearOnly ? "In deiner Nähe gerade nicht. Schalte „Nur in meiner Nähe“ aus, um alle zu sehen." : "Sobald jemand eine Einkaufsliste anlegt, steht sie hier.",
         `<a class="btn primary" href="#hilfe">Eigenen Einkauf anfragen</a>`);
   return `<section class="intro">
       <h1>Wer braucht heute etwas aus dem Laden?</h1>
@@ -546,6 +567,7 @@ function vAuftraege() {
     </section>
     <div class="layout"><div>
       <div class="toolbar">
+        ${myZips.length ? `<label class="near"><input type="checkbox" id="nearOnly"${nearOnly ? " checked" : ""}> Nur in meiner Nähe</label>` : ""}
         <input id="flt" type="search" placeholder="Stadtteil, PLZ, Laden oder Artikel" value="${esc(S.filter)}" aria-label="Aufträge filtern">
         <select id="sort" aria-label="Sortierung">
           <option value="neu"${S.sort === "neu" ? " selected" : ""}>Neueste zuerst</option>
@@ -697,7 +719,7 @@ function vBetreiber() {
       <p class="small" style="margin-top:8px">Davon gehen geschätzt ${euro(stripeEst(captured))} an Stripe (ca. 1,5 % + 0,25 € je Zahlung), dir bleiben also etwa <b>${euro(round2(fees(captured) - stripeEst(captured)))}</b>. Die genauen Beträge siehst du im Stripe-Dashboard.</p></section>
       ${disputes.length ? `<section><h2 class="section-title">Reklamationen</h2><div class="stack">${disputes.map(r => `<div class="card dispute-card">
           <div><b>${orderNo(r.id)}</b> · ${esc(r.title)} · Kunde ${esc(nameOf(r.createdBy))} · Held ${esc(nameOf(r.helperId))} ${starsHtml(ratingOf(r.helperId))}</div>
-          <p>„${esc(r.dispute.text)}“</p>
+          <p>${disputeText(r.id) || "Text wird geladen …"}</p>
           <div class="meta"><div><span class="k">Kassenbon</span><span>${euro(r.receiptTotal)}</span></div><div><span class="k">Heldenlohn + Trinkgeld</span><span>${euro(earned(r))}</span></div><div><span class="k">Gewünscht zurück</span><span>${euro(r.dispute.amount)}</span></div></div>
           <form class="resolve actions" data-id="${esc(r.id)}">
             <label class="f" style="flex:1 1 160px">Erstatten in €<input id="rs-${esc(r.id)}" type="number" inputmode="decimal" min="0" max="${r.receiptTotal + earned(r)}" step="0.01" value="${r.dispute.amount}"></label>
@@ -1054,6 +1076,7 @@ function cartAction(b) {
 document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (t.id === "sort") { S.sort = t.value; S.renderedView = null; render(); return; }
+  if (t.id === "nearOnly") { S.nearOnly = t.checked; try { localStorage.setItem("eh-near", t.checked ? "1" : "0"); } catch (e) {} S.renderedView = null; render(); return; }
   if (t.id === "r-heavy" || t.id === "r-due") { const c = $("#calc"); if (c) c.innerHTML = calcHtml(); }
   if (t.matches("input[data-act=tick]")) {
     const r = S.requests.find(x => x.id === t.dataset.id); if (!r) return;
@@ -1130,7 +1153,12 @@ document.addEventListener("submit", async (ev) => {
     if (text.length < 5) { toast("Beschreib das Problem bitte in ein paar Worten."); return; }
     if (amount < 0 || amount > r.receiptTotal + earned(r)) { toast(`Der Betrag darf höchstens ${euro(r.receiptTotal + earned(r))} sein.`); return; }
     S.disputeFor = null;
-    return withBusy(id, async () => { await updateDoc(reqRef(id), { dispute: { text, amount, status: "offen", at: serverTimestamp() } }); info("Danke. Wir prüfen das und melden uns."); });
+    return withBusy(id, async () => {
+      await setDoc(doc(db, "requests", id, "private", "dispute"), { text });
+      await updateDoc(reqRef(id), { dispute: { amount, status: "offen", at: serverTimestamp() } });
+      disputeTexts[id] = text;
+      info("Danke. Wir prüfen das und melden uns.");
+    });
   }
   if (form.classList.contains("resolve")) {
     const id = form.dataset.id;
@@ -1273,6 +1301,7 @@ async function deleteAccount() {
     for (const d of own.docs) { const x = d.data(); if (["zahlung_offen", "abgelaufen"].includes(x.status) || x.transferId) await deleteDoc(d.ref); }
     await deleteDoc(doc(db, "helpers", S.myId)).catch(() => {});
     await deleteDoc(doc(db, "addresses", S.myId)).catch(() => {});
+    await deleteDoc(doc(db, "pushTokens", S.myId)).catch(() => {});
     await deleteDoc(doc(db, "users", S.myId));
     stopData();
     await deleteUser(S.fbUser);
