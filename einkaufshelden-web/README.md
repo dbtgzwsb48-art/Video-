@@ -8,7 +8,12 @@ Sie nutzt **Firebase** von Google (Anmeldung, Datenbank, Hosting, Server-Funktio
 ## Was die App kann
 
 - Anmeldung mit Google oder mit E-Mail und Passwort (inkl. Passwort vergessen und E-Mail-Bestätigung)
-- Einkauf bestellen mit Höchstbetrag, mehreren Läden und automatisch berechnetem Heldenlohn
+- **Startseite mit Läden:** PLZ eingeben, Helden in der Nähe sehen, Laden wählen, Warenkorb aus Vorschlägen
+  zusammentippen (mit Mengen), eigene Artikel ergänzen, zur Kasse
+- **Lieferadresse beim Bestellen:** privat, nur der übernehmende Held sieht sie; auf Wunsch gemerkt
+- Freie Einkaufsliste mit Höchstbetrag und mehreren Läden, Heldenlohn wird automatisch berechnet
+- **Bewertungen:** 1–5 Sterne nach der Lieferung, Durchschnitt bei jedem Helden
+- **Nochmal bestellen:** frühere Bestellungen mit einem Klick wiederholen
 - **Bezahlen in der App** per Karte, Apple Pay, Google Pay u. a. über Stripe
 - **Live-Status** für den Kunden: Bezahlt → Held gefunden → Kauft ein → Unterwegs → Geliefert
 - Mitglied werden ab 10 Jahren (unter 18 mit Einverständnis der Eltern)
@@ -24,7 +29,8 @@ Sie nutzt **Firebase** von Google (Anmeldung, Datenbank, Hosting, Server-Funktio
 
 Die Sicherheitsregeln in `firestore.rules` sorgen dafür, dass niemand fremde Aufträge ändern,
 sich selbst mehr Lohn geben, die Bezahlung überspringen, einen zu hohen Kassenbon eintragen oder fremde Chats
-lesen kann. Zahlungsdaten schreibt nur der Server. Das ist mit 20 automatischen Tests abgesichert (`npm test`).
+lesen kann. Lieferadressen sieht nur der übernehmende Held. Zahlungsdaten schreibt nur der Server.
+Das ist mit 23 automatischen Tests abgesichert (`npm test`).
 
 ## So läuft das Geld
 
@@ -58,6 +64,13 @@ Beispiel: Budget 30 €, ein Laden, Kassenbon 24,37 €.
 3. **Firestore Database → Sammlung starten** → Sammlungs-ID `admins`, Dokument-ID = deine UID,
    ein Feld `seit` (Typ string) mit dem heutigen Datum → Speichern.
 4. App neu laden. Oben erscheint der Reiter **Betreiber**.
+
+## Läden und Vorschläge ändern
+
+Die Läden auf der Startseite und die Artikel-Vorschläge stehen oben in `public/app.js` (`SHOP_KIND` und `SUGGEST`).
+Es sind Ladenketten, keine echten Filialen: Der Held kauft in einer Filiale seiner Wahl in der Nähe.
+Helden „in der Nähe“ sind die, deren Gebiet eine PLZ mit denselben ersten drei Ziffern enthält. Deshalb
+sollten Helden in ihrem Profil ihre PLZ angeben.
 
 ## Heldenlohn ändern
 

@@ -22,6 +22,12 @@ service cloud.firestore {
     }
     function isAdmin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(uid())); }
 
+    function validAddress(a) {
+      return a.keys().hasOnly(['street', 'zip', 'city', 'floor', 'phone'])
+        && text(a.street, 3, 80) && a.zip is string && a.zip.matches('^[0-9]{5}$')
+        && text(a.city, 2, 50) && text(a.floor, 0, 80) && text(a.phone, 0, 30);
+    }
+
     // Mindest-Heldenlohn, muss zu FEE.base in public/app.js passen.
     function MIN_FEE() { return 3; }
     // Servicegebühr je Einkauf für den Betreiber, muss zu SERVICE_FEE in public/app.js passen.
@@ -120,6 +126,17 @@ service cloud.firestore {
         && (oldData().status in ['zahlung_offen', 'abgelaufen']
             || (oldData().status == 'erledigt' && oldData().get('transferId', null) != null));
 
+      // ---------- Lieferadresse (privat) ----------
+      // Sieht nur der Kunde, der Held nach dem Übernehmen und der Betreiber.
+      match /private/{docId} {
+        function order() { return get(/databases/$(database)/documents/requests/$(reqId)).data; }
+        allow read: if signedIn() && (order().createdBy == uid() || order().helperId == uid() || isAdmin());
+        allow create, update: if signedIn() && docId == 'address'
+          && order().createdBy == uid() && order().status == 'zahlung_offen'
+          && validAddress(newData());
+        allow delete: if false;
+      }
+
       // ---------- Privater Übergabe-Chat ----------
       match /messages/{msgId} {
         function req() { return get(/databases/$(database)/documents/requests/$(reqId)).data; }
@@ -132,6 +149,29 @@ service cloud.firestore {
           && newData().at == request.time;
         allow update, delete: if false;
       }
+    }
+
+    // ---------- Gemerkte Lieferadresse ----------
+    match /addresses/{userId} {
+      allow read, delete: if isMe(userId);
+      allow create, update: if isMe(userId) && validAddress(newData());
+    }
+
+    // ---------- Bewertungen ----------
+    // Eine Bewertung je Auftrag (Dokument-ID = Auftrags-ID), nur vom Kunden, nur nach der Lieferung.
+    match /ratings/{reqId} {
+      function order() { return get(/databases/$(database)/documents/requests/$(reqId)).data; }
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && order().createdBy == uid() && order().status == 'erledigt'
+        && newData().keys().hasOnly(['helperId', 'by', 'stars', 'text', 'at'])
+        && newData().helperId == order().helperId
+        && newData().by == uid()
+        && newData().stars is int && newData().stars >= 1 && newData().stars <= 5
+        && text(newData().text, 0, 300)
+        && newData().at == request.time;
+      allow delete: if isAdmin();
+      allow update: if false;
     }
 
     // ---------- Betreiber ----------

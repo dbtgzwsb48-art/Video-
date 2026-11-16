@@ -171,3 +171,39 @@ test("Betreiber liest und erledigt Meldungen", async () => {
   await assertSucceeds(getDoc(doc(db(CHEF), "reports", "m1")));
   await assertSucceeds(deleteDoc(doc(db(CHEF), "reports", "m1")));
 });
+
+const addr = (over = {}) => ({ street: "Venloer Str. 1", zip: "50823", city: "Köln", floor: "3. OG", phone: "", ...over });
+
+test("Lieferadresse: nur Kunde, übernehmender Held und Betreiber sehen sie", async () => {
+  await assertSucceeds(setDoc(doc(db(ANNA), "requests", "a1"), request()));
+  await assertSucceeds(setDoc(doc(db(ANNA), "requests", "a1", "private", "address"), addr()));
+  await assertFails(setDoc(doc(db(ANNA), "requests", "a1", "private", "address"), addr({ zip: "123" })));
+  await assertFails(setDoc(doc(db(CARO), "requests", "a1", "private", "address"), addr()));
+  await assertSucceeds(getDoc(doc(db(ANNA), "requests", "a1", "private", "address")));
+  await assertFails(getDoc(doc(db(BEN), "requests", "a1", "private", "address")));   // noch nicht übernommen
+  await assertFails(getDoc(doc(db(CARO), "requests", "a1", "private", "address")));
+  await asServer((fs) => updateDoc(doc(fs, "requests", "a1"), { status: "offen", paid: true, captured: false, transferId: null }));
+  await assertSucceeds(updateDoc(doc(db(BEN), "requests", "a1"), { status: "uebernommen", helperId: BEN, takenAt: serverTimestamp() }));
+  await assertSucceeds(getDoc(doc(db(BEN), "requests", "a1", "private", "address")));
+  await assertSucceeds(getDoc(doc(db(CHEF), "requests", "a1", "private", "address")));
+  await assertFails(setDoc(doc(db(ANNA), "requests", "a1", "private", "address"), addr({ street: "Andere Str. 5" })));  // nach Bezahlung fest
+});
+
+test("Gemerkte Adresse ist nur für einen selbst", async () => {
+  await assertSucceeds(setDoc(doc(db(ANNA), "addresses", ANNA), addr()));
+  await assertFails(getDoc(doc(db(BEN), "addresses", ANNA)));
+  await assertFails(setDoc(doc(db(BEN), "addresses", ANNA), addr()));
+});
+
+test("Bewertung: nur der Kunde, nur nach Lieferung, nur einmal, 1–5 Sterne", async () => {
+  const rate = (stars, by = ANNA, helperId = BEN) => ({ helperId, by, stars, text: "Super, danke!", at: serverTimestamp() });
+  await assertSucceeds(updateDoc(doc(db(BEN), "requests", "r1"), { status: "uebernommen", helperId: BEN, takenAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(db(ANNA), "ratings", "r1"), rate(5)));            // noch nicht geliefert
+  await assertSucceeds(updateDoc(doc(db(BEN), "requests", "r1"), deliver()));
+  await assertFails(setDoc(doc(db(BEN), "ratings", "r1"), rate(5, BEN)));        // Held bewertet sich nicht selbst
+  await assertFails(setDoc(doc(db(ANNA), "ratings", "r1"), rate(6)));
+  await assertFails(setDoc(doc(db(ANNA), "ratings", "r1"), rate(5, ANNA, CARO)));
+  await assertSucceeds(setDoc(doc(db(ANNA), "ratings", "r1"), rate(5)));
+  await assertFails(setDoc(doc(db(ANNA), "ratings", "r1"), rate(1)));            // nicht nachträglich ändern
+  await assertSucceeds(getDoc(doc(db(CARO), "ratings", "r1")));
+});

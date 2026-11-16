@@ -18,11 +18,39 @@ export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2,
 // Servicegebühr je Einkauf für den Betreiber. Muss zu SERVICE_FEE() in firestore.rules passen.
 export const SERVICE_FEE = 0.2;
 const SHOPS = ["Aldi", "Lidl", "Rewe", "Edeka", "Penny", "Netto", "Kaufland", "Norma", "dm", "Rossmann", "Apotheke", "Getränkemarkt", "Bäckerei", "Wochenmarkt", "Bio-Laden", "Drogerie egal", "Supermarkt egal"];
+// Startseite: Läden nach Art, mit Vorschlägen für den Warenkorb
+const SHOP_KIND = {
+  Supermarkt: ["Aldi", "Lidl", "Rewe", "Edeka", "Penny", "Netto", "Kaufland", "Norma"],
+  Drogerie: ["dm", "Rossmann"],
+  Apotheke: ["Apotheke"], Getränke: ["Getränkemarkt"], Bäckerei: ["Bäckerei"], Frisches: ["Wochenmarkt", "Bio-Laden"],
+};
+const kindOf = (shop) => Object.keys(SHOP_KIND).find(k => SHOP_KIND[k].includes(shop)) || "Supermarkt";
+const SUGGEST = {
+  Supermarkt: {
+    "Obst & Gemüse": ["Bananen", "Äpfel", "Tomaten", "Gurke", "Kartoffeln, 2 kg", "Zwiebeln", "Möhren", "Salat"],
+    "Milch & Käse": ["Milch, 1 l", "Butter", "Joghurt", "Gouda in Scheiben", "Quark", "Eier, 10 Stück"],
+    "Brot & Frühstück": ["Toastbrot", "Vollkornbrot", "Brötchen zum Aufbacken", "Marmelade", "Haferflocken", "Kaffee"],
+    "Vorrat": ["Nudeln", "Reis", "Passierte Tomaten", "Mehl", "Zucker", "Öl"],
+    "Getränke": ["Wasser, 6 × 1,5 l", "Apfelsaft", "Orangensaft"],
+    "Haushalt": ["Toilettenpapier", "Küchenrolle", "Spülmittel", "Müllbeutel"],
+  },
+  Drogerie: {
+    "Pflege": ["Zahnpasta", "Duschgel", "Shampoo", "Deo", "Handcreme"],
+    "Baby": ["Windeln", "Feuchttücher", "Babybrei"],
+    "Haushalt": ["Waschmittel", "Spülmaschinentabs", "Allzweckreiniger"],
+  },
+  Apotheke: { "Rezeptfrei": ["Schmerztabletten", "Hustensaft", "Nasenspray", "Halstabletten", "Pflaster", "Fieberthermometer"] },
+  Getränke: { "Kisten": ["Wasser still, Kiste", "Wasser sprudelnd, Kiste", "Apfelschorle, Kiste", "Cola, Kiste"], "Einzeln": ["Saft, 1 l", "Eistee"] },
+  Bäckerei: { "Brot & Brötchen": ["Brötchen, 6 Stück", "Mischbrot", "Vollkornbrot", "Brezel", "Croissant"], "Süßes": ["Streuselkuchen", "Berliner"] },
+  Frisches: { "Obst & Gemüse": ["Äpfel", "Birnen", "Salat", "Tomaten", "Kräuter"], "Sonstiges": ["Eier", "Käse", "Honig"] },
+};
+const slug = (x) => x.toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const shopBySlug = (sl) => SHOPS.find(x => slug(x) === sl);
 const MAX_SHOPS = 6;
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const VIEWS = ["auftraege", "hilfe", "meine", "held", "helden", "konto", "betreiber"];
+const VIEWS = ["start", "auftraege", "hilfe", "meine", "held", "helden", "konto", "betreiber"];
 const WINDOWS = { egal: "egal wann", vormittags: "vormittags", mittags: "mittags", nachmittags: "nachmittags", abends: "abends" };
 const STATUS = { zahlung_offen: "Nicht bezahlt", offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert", abgelaufen: "Abgelaufen" };
 const BUDGET = { min: 5, max: 300 };   // muss zu firestore.rules und functions/lib.js passen
@@ -85,14 +113,35 @@ const S = {
   authMode: "login", renderedView: null, formKey: null,
   chatId: null, chatMsgs: [], unsubChat: null,
   isAdmin: false, reports: [], payoutReady: null, deliverFor: null,
+  ratings: [], savedAddress: null, addresses: {}, rateFor: {}, cart: { shop: null, items: [] }, plz: "",
 };
 const unsubs = [];
 let lastDraft = null;
 try { lastDraft = JSON.parse(localStorage.getItem("eh-draft") || "null"); } catch (e) {}
 try { const s = localStorage.getItem("eh-show"); if (s) S.show = s; } catch (e) {}
+try { const c = JSON.parse(localStorage.getItem("eh-cart") || "null"); if (c && Array.isArray(c.items)) S.cart = c; } catch (e) {}
+try { S.plz = localStorage.getItem("eh-plz") || ""; } catch (e) {}
+const saveCart = () => { try { localStorage.setItem("eh-cart", JSON.stringify(S.cart)); } catch (e) {} };
 
-const view = () => { const h = (location.hash || "").slice(1); return VIEWS.includes(h) ? h : "auftraege"; };
+const shopFromHash = () => { const m = /^#laden-([a-z0-9-]+)$/.exec(location.hash || ""); return m ? shopBySlug(m[1]) : null; };
+const view = () => {
+  if (shopFromHash()) return "laden";
+  const h = (location.hash || "").slice(1);
+  return VIEWS.includes(h) ? h : (isHero() ? "auftraege" : "start");
+};
 const isHero = () => !!(S.myId && S.helpers[S.myId] && S.helpers[S.myId].active !== false);
+// Helden in der Nähe: gleiche ersten 3 Ziffern der PLZ oder Ortsname im Gebiet
+function heroesNear(plz) {
+  const list = Object.entries(S.helpers).filter(([, h]) => h.active !== false);
+  if (!/^[0-9]{5}$/.test(plz || "")) return list;
+  return list.filter(([, h]) => (String(h.area || "").match(/[0-9]{5}/g) || []).some(z => z.slice(0, 3) === plz.slice(0, 3)));
+}
+function ratingOf(helperId) {
+  const l = S.ratings.filter(x => x.helperId === helperId);
+  if (!l.length) return null;
+  return { avg: l.reduce((a, x) => a + x.stars, 0) / l.length, n: l.length };
+}
+const starsHtml = (rt) => rt ? `<span class="stars" title="${rt.avg.toFixed(1).replace(".", ",")} von 5 Sternen">★ ${rt.avg.toFixed(1).replace(".", ",")} <small>(${rt.n})</small></span>` : `<span class="stars none">neu</span>`;
 const nameOf = (id) => (id && id === S.myId) ? "Du" : (S.names[id] || "Jemand");
 
 // Namen aus users/{uid} nachladen (mit Cache)
@@ -142,7 +191,9 @@ function renderHeader() {
     $("#c-open").textContent = S.loaded ? String(S.requests.filter(r => r.status === "offen").length) : "";
     $("#c-heroes").textContent = S.loaded ? String(Object.values(S.helpers).filter(h => h.active !== false).length) : "";
     $("#tab-admin").hidden = !S.isAdmin;
-    document.querySelectorAll("#tabs a").forEach(a => a.setAttribute("aria-current", a.dataset.view === view() ? "page" : "false"));
+    const cv = view() === "laden" ? "start" : view();
+    document.querySelectorAll("#tabs a").forEach(a => a.setAttribute("aria-current", a.dataset.view === cv ? "page" : "false"));
+    const cc = $("#c-cart"); if (cc) cc.textContent = S.cart.items.length ? String(S.cart.items.reduce((a, x) => a + x.q, 0)) : "";
   }
 }
 
@@ -189,6 +240,19 @@ function payLine(r) {
   return `<div><span class="k">Reserviert</span><span>${euro(r.budget + r.fee + svc(r))}</span></div>`;
 }
 
+function addressBox(id) {
+  const a = S.addresses[id];
+  if (a === undefined) { if (!loadingAddr.has(id)) { loadingAddr.add(id); loadAddress(id); } return `<div class="addr"><b>Lieferadresse</b><span>wird geladen …</span></div>`; }
+  if (!a) return `<div class="addr"><b>Lieferadresse</b><span>fehlt – frag im Chat nach</span></div>`;
+  return `<div class="addr"><b>Lieferadresse</b><span class="sel">${esc(a.street)}, ${esc(a.zip)} ${esc(a.city)}</span>${a.floor ? `<span>${esc(a.floor)}</span>` : ""}${a.phone ? `<span>Tel. <span class="sel">${esc(a.phone)}</span></span>` : ""}</div>`;
+}
+const loadingAddr = new Set();
+async function loadAddress(id) {
+  try { const snap = await getDoc(doc(db, "requests", id, "private", "address")); S.addresses[id] = snap.exists() ? snap.data() : null; }
+  catch (e) { console.error(e); S.addresses[id] = null; }
+  S.renderedView = null; render();
+}
+
 function card(r) {
   const mineReq = r.createdBy === S.myId;
   const mineJob = r.helperId === S.myId;
@@ -220,6 +284,17 @@ function card(r) {
   if (mineReq && r.status === "erledigt" && !r.thanks) {
     actions += `<button class="btn primary" data-act="thanks" data-id="${id}"${busy}>Erhalten, danke!</button>`;
   }
+  const myRating = S.ratings.find(x => x.id === r.id);
+  if (mineReq && r.status === "erledigt" && r.thanks && !myRating) {
+    const st = S.rateFor[r.id] || 0;
+    actions += `<form class="rate" data-id="${id}">
+        <span class="rate-q">Wie war ${esc(nameOf(r.helperId))}?</span>
+        <div class="star-pick" role="radiogroup" aria-label="Sterne">${[1, 2, 3, 4, 5].map(n => `<button type="button" class="star${n <= st ? " on" : ""}" data-act="star" data-id="${id}" data-n="${n}" role="radio" aria-checked="${n === st}" aria-label="${n} Sterne">★</button>`).join("")}</div>
+        <input id="rt-${id}" maxlength="300" placeholder="Optional: ein paar Worte">
+        <button class="btn primary" type="submit"${st ? "" : " disabled"}>Bewerten</button>
+      </form>`;
+  }
+  if (mineReq && ["erledigt", "abgelaufen"].includes(r.status)) actions += `<button class="btn" data-act="reorder" data-id="${id}">Nochmal bestellen</button>`;
   const deletable = ["zahlung_offen", "abgelaufen"].includes(r.status) || (r.status === "erledigt" && r.transferId);
   if (mineReq && (r.status === "offen" || deletable)) {
     const label = r.status === "offen" ? "Zurückziehen" : r.status === "erledigt" ? "Entfernen" : "Verwerfen";
@@ -250,10 +325,12 @@ function card(r) {
       ${(mineReq || S.isAdmin) ? payLine(r) : `<div><span class="k">Bezahlung</span><span>online, gesichert</span></div>`}
     </div>
     ${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}
+    ${mineJob && r.status === "uebernommen" ? addressBox(r.id) : ""}
+    ${myRating ? `<p class="note">Deine Bewertung: <span class="stars">${"★".repeat(myRating.stars)}${"☆".repeat(5 - myRating.stars)}</span>${myRating.text ? " – „" + esc(myRating.text) + "“" : ""}</p>` : ""}
     ${hint}
     <div class="people">
       <span>${esc(nameOf(r.createdBy))} · ${esc(ago(r.createdAt))}</span>
-      ${r.helperId ? `<span>→ <b>${esc(nameOf(r.helperId))}</b> kauft ein</span>` : ""}
+      ${r.helperId ? `<span>→ <b>${esc(nameOf(r.helperId))}</b> ${starsHtml(ratingOf(r.helperId))}</span>` : ""}
       ${r.thanks ? `<span class="cape">Erhalten ✓</span>` : ""}
     </div>
     ${actions ? `<div class="actions">${actions}</div>` : ""}
@@ -288,7 +365,7 @@ function sidebar() {
   return `<aside>
     <section class="panel">
       <h2>Heldenwand</h2>
-      ${top.length ? `<ul class="wall">${top.map(([id, n]) => `<li><span class="name">${esc(nameOf(id))}</span><span class="n">${n}× · ${euro(money[id])}</span></li>`).join("")}</ul>`
+      ${top.length ? `<ul class="wall">${top.map(([id, n]) => `<li><span class="name">${esc(nameOf(id))}</span>${starsHtml(ratingOf(id))}<span class="n">${n}× · ${euro(money[id])}</span></li>`).join("")}</ul>`
         : `<p class="small">Hier erscheinen die Helden mit den meisten gelieferten Einkäufen.</p>`}
     </section>
     ${tarifPanel()}
@@ -345,6 +422,63 @@ function vOnboarding() {
       <label class="consent"><input type="checkbox" id="o-terms" required> <span>Ich habe die <a href="agb.html" target="_blank">Nutzungsbedingungen</a> und die <a href="datenschutz.html" target="_blank">Datenschutzerklärung</a> gelesen und bin einverstanden.</span></label>
       <div class="form-foot"><button class="btn primary" type="submit">Los geht's</button><span class="msg" id="o-msg" role="status"></span></div>
     </form>`;
+}
+
+function vStart() {
+  const plz = S.plz;
+  const near = heroesNear(plz);
+  const shopCard = (x) => `<a class="shop-card" href="#laden-${slug(x)}">
+      <span class="shop-logo" aria-hidden="true">${esc(x.slice(0, 2))}</span>
+      <span class="shop-name">${esc(x)}</span>
+      <span class="shop-kind">${esc(kindOf(x))}</span>
+      <span class="shop-meta">${near.length ? `${near.length} ${near.length === 1 ? "Held" : "Helden"} in der Nähe` : "noch keine Helden in der Nähe"} · ab ${euro(FEE.base)}</span>
+    </a>`;
+  const cartN = S.cart.items.reduce((a, x) => a + x.q, 0);
+  return `<section class="hero-start">
+      <h1>Was soll dir heute jemand mitbringen?</h1>
+      <form id="plzForm" class="plz">
+        <label for="plz" class="visually-hidden">Deine Postleitzahl</label>
+        <input id="plz" inputmode="numeric" pattern="[0-9]{5}" maxlength="5" placeholder="Deine PLZ" value="${esc(plz)}" autocomplete="postal-code">
+        <button class="btn primary" type="submit">Läden anzeigen</button>
+      </form>
+      <p class="small">${/^[0-9]{5}$/.test(plz) ? `${near.length ? `<b>${near.length} ${near.length === 1 ? "Einkaufsheld" : "Einkaufshelden"}</b> in der Nähe von ${esc(plz)}` : `Rund um ${esc(plz)} gibt es noch keine Helden. Du kannst trotzdem bestellen.`}` : "Gib deine PLZ ein, dann zeigen wir dir die Helden in deiner Nähe."}</p>
+      ${cartN && S.cart.shop ? `<a class="btn primary cart-resume" href="#laden-${slug(S.cart.shop)}">Warenkorb bei ${esc(S.cart.shop)} (${cartN}) fortsetzen</a>` : ""}
+    </section>
+    <div class="stack" style="padding-block: 8px 56px">
+      ${Object.entries(SHOP_KIND).map(([kind, list]) => `<section><h2 class="section-title">${esc(kind)}</h2><div class="shop-grid">${list.map(shopCard).join("")}</div></section>`).join("")}
+      <section><h2 class="section-title">Mehrere Läden oder etwas anderes?</h2><a class="btn" href="#hilfe">Freie Einkaufsliste schreiben</a></section>
+    </div>`;
+}
+
+function vLaden(shop) {
+  if (!shop) return emptyBox("Laden nicht gefunden", "", `<a class="btn" href="#start">Zur Übersicht</a>`);
+  if (S.cart.shop !== shop && S.cart.items.length === 0) S.cart.shop = shop;
+  const other = S.cart.shop && S.cart.shop !== shop && S.cart.items.length;
+  const inCart = (t) => (S.cart.shop === shop ? S.cart.items.find(x => x.t === t) : null);
+  const cats = SUGGEST[kindOf(shop)] || SUGGEST.Supermarkt;
+  const n = S.cart.items.reduce((a, x) => a + x.q, 0);
+  return `<section class="intro"><a class="small" href="#start">← Alle Läden</a><h1>${esc(shop)}</h1><p>Tipp an, was du brauchst. Was fehlt, schreibst du unten selbst dazu. Marke und Menge kannst du im nächsten Schritt noch ergänzen.</p></section>
+    ${other ? `<div class="notice">Dein Warenkorb ist bei ${esc(S.cart.shop)}. <button class="linkbtn" type="button" data-act="cartswitch" data-shop="${esc(shop)}">Leeren und hier neu anfangen</button> oder <a href="#laden-${slug(S.cart.shop)}">zurück zu ${esc(S.cart.shop)}</a>.</div>` : ""}
+    <div class="layout shop-layout"><div class="stack">
+      ${Object.entries(cats).map(([cat, items]) => `<section><h2 class="section-title">${esc(cat)}</h2><div class="prod-grid">${items.map(t => { const c = inCart(t); return `<div class="prod${c ? " in" : ""}">
+          <span>${esc(t)}</span>
+          ${c ? `<span class="qty"><button type="button" data-act="cart-" data-t="${esc(t)}" aria-label="Weniger ${esc(t)}"${other ? " disabled" : ""}>−</button><b>${c.q}</b><button type="button" data-act="cart+" data-t="${esc(t)}" aria-label="Mehr ${esc(t)}"${other ? " disabled" : ""}>+</button></span>`
+              : `<button type="button" class="add" data-act="cart+" data-t="${esc(t)}" aria-label="${esc(t)} hinzufügen"${other ? " disabled" : ""}>+</button>`}
+        </div>`; }).join("")}</div></section>`).join("")}
+      <section><h2 class="section-title">Eigener Artikel</h2>
+        <form id="ownItem" class="plz"><input id="own" maxlength="100" placeholder="z. B. Hafermilch, ungesüßt"${other ? " disabled" : ""}><button class="btn" type="submit"${other ? " disabled" : ""}>Hinzufügen</button></form>
+      </section>
+    </div>
+    <aside class="cart">
+      <section class="panel">
+        <h2>Warenkorb${S.cart.shop ? " · " + esc(S.cart.shop) : ""}</h2>
+        ${S.cart.items.length ? `<ul class="cart-list">${S.cart.items.map(x => `<li><span>${x.q} × ${esc(x.t)}</span><span class="qty"><button type="button" data-act="cart-" data-t="${esc(x.t)}" aria-label="Weniger">−</button><button type="button" data-act="cart+" data-t="${esc(x.t)}" aria-label="Mehr">+</button></span></li>`).join("")}</ul>`
+          : `<p class="small">Noch leer. Tipp auf + bei einem Artikel.</p>`}
+        <dl class="tarif"><div><dt>Heldenlohn ab</dt><dd>${euro(FEE.base)}</dd></div><div><dt>Servicegebühr</dt><dd>${euro(SERVICE_FEE)}</dd></div></dl>
+        <button class="btn primary wide" type="button" data-act="checkout"${n ? "" : " disabled"}>Zur Kasse${n ? ` (${n} ${n === 1 ? "Artikel" : "Artikel"})` : ""}</button>
+      </section>
+    </aside></div>
+    ${n ? `<div class="cart-bar"><button class="btn primary wide" type="button" data-act="checkout">Zur Kasse · ${n} Artikel</button></div>` : ""}`;
 }
 
 function vAuftraege() {
@@ -413,9 +547,10 @@ function calcHtml() {
 
 function vHilfe() {
   const d = lastDraft || {};
+  const ad = d.address || S.savedAddress || {};
   const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   return `<section class="intro">
-      <h1>Einkauf anfragen</h1>
+      <h1>Kasse</h1>
       <p>Schreib deine Liste so, wie du sie auf einen Zettel schreiben würdest: ein Artikel pro Zeile, gern mit Menge und Marke.</p>
     </section>
     <div class="layout"><div>
@@ -423,7 +558,19 @@ function vHilfe() {
       <label class="f">Worum geht's?<input id="r-title" required maxlength="80" placeholder="Wocheneinkauf, Apotheke, Getränke …" value="${esc(d.title || "")}"></label>
       <label class="f">Einkaufsliste <small>Ein Artikel pro Zeile</small>
         <textarea class="list" id="r-items" required placeholder="1 l Milch (3,5 %)&#10;6 Eier, Freiland&#10;Vollkornbrot&#10;2 kg Kartoffeln, festkochend">${esc(d.items || "")}</textarea></label>
-      <label class="f">Stadtteil oder PLZ <small>Keine genaue Adresse</small><input id="r-area" required maxlength="60" placeholder="z. B. 50823 Ehrenfeld" value="${esc(d.area || "")}"></label>
+      <fieldset class="addr-form">
+        <legend>Lieferadresse <small>Sieht nur dein Held, sobald er übernommen hat.</small></legend>
+        <label class="f">Straße und Hausnummer<input id="a-street" required minlength="3" maxlength="80" autocomplete="street-address" value="${esc(ad.street || "")}"></label>
+        <div class="row">
+          <label class="f">PLZ<input id="a-zip" required inputmode="numeric" pattern="[0-9]{5}" maxlength="5" autocomplete="postal-code" value="${esc(ad.zip || S.plz || "")}"></label>
+          <label class="f">Ort<input id="a-city" required minlength="2" maxlength="50" autocomplete="address-level2" value="${esc(ad.city || "")}"></label>
+        </div>
+        <div class="row">
+          <label class="f">Etage, Klingel <small>Optional</small><input id="a-floor" maxlength="80" placeholder="3. OG, bei Müller klingeln" value="${esc(ad.floor || "")}"></label>
+          <label class="f">Telefon für den Helden <small>Optional</small><input id="a-phone" type="tel" maxlength="30" autocomplete="tel" value="${esc(ad.phone || "")}"></label>
+        </div>
+        <label class="f" style="display:flex;gap:8px;align-items:center;font-weight:500"><input id="a-save" type="checkbox" style="width:auto" checked> Adresse für die nächste Bestellung merken</label>
+      </fieldset>
       <div class="f" role="group" aria-labelledby="r-shops-l"><span id="r-shops-l" style="font-weight:600;font-size:14px">In welchen Läden? <small style="font-weight:400;color:var(--muted)">Mehrere möglich, bis zu ${MAX_SHOPS}. Jeder weitere Laden + ${euro(FEE.extraShop)} Heldenlohn.</small></span>
         <div class="checks">${SHOPS.map(x => `<label><input type="checkbox" name="shop" value="${esc(x)}"${(d.shops || []).includes(x) ? " checked" : ""}>${esc(x)}</label>`).join("")}</div>
         <input id="r-shop-other" maxlength="80" placeholder="Anderer Laden, z. B. Asia-Markt Venloer Str. (mehrere mit Komma)" value="${esc(d.shopOther || "")}" aria-label="Anderer Laden">
@@ -498,8 +645,10 @@ function vBetreiber() {
 
 function vMeine() {
   const mine = S.requests.filter(r => r.createdBy === S.myId);
+  const isOld = (r) => r.status === "abgelaufen" || (r.status === "erledigt" && r.thanks && S.ratings.some(x => x.id === r.id));
+  const active = mine.filter(r => !isOld(r)), history = mine.filter(isOld);
   const jobs = S.requests.filter(r => r.helperId === S.myId);
-  return `<section class="intro"><h1>Meine Einkäufe</h1><p>Was du angefragt hast und wofür du gerade einkaufen gehst.</p></section>
+  return `<section class="intro"><h1>Meine Bestellungen</h1><p>Was du angefragt hast und wofür du gerade einkaufen gehst.</p></section>
     <div class="stack" style="padding-block: 16px 56px">
       ${jobs.length || isHero() ? earnBox(jobs) : ""}
       <section>
@@ -508,10 +657,11 @@ function vMeine() {
           : loadingOrEmpty("Noch kein Einsatz", isHero() ? "Such dir unter „Aufträge“ einen Einkauf in deiner Nähe aus." : "Melde dich als Einkaufsheld an, dann kannst du Aufträge übernehmen.", `<a class="btn primary" href="${isHero() ? "#auftraege" : "#held"}">${isHero() ? "Zu den Aufträgen" : "Held werden"}</a>`)}
       </section>
       <section>
-        <h2 class="section-title">Meine Anfragen</h2>
-        ${mine.length ? `<div class="grid">${mine.map(card).join("")}</div>`
-          : loadingOrEmpty("Du hast noch nichts angefragt", "Leg eine Einkaufsliste an, und ein Held aus deiner Gegend kümmert sich darum.", `<a class="btn primary" href="#hilfe">Einkauf anfragen</a>`)}
+        <h2 class="section-title">Meine Bestellungen</h2>
+        ${active.length ? `<div class="grid">${active.map(card).join("")}</div>`
+          : loadingOrEmpty("Gerade keine Bestellung", "Such dir einen Laden aus und stell deinen Warenkorb zusammen.", `<a class="btn primary" href="#start">Jetzt bestellen</a>`)}
       </section>
+      ${history.length ? `<section><h2 class="section-title">Frühere Bestellungen</h2><div class="grid">${history.map(card).join("")}</div></section>` : ""}
     </div>`;
 }
 
@@ -527,7 +677,7 @@ function vHeld() {
     ${registered ? payoutBox() : ""}
     <form class="card" id="heroForm" autocomplete="off">
       <div class="row">
-        <label class="f">Mein Gebiet <small>Stadtteil oder PLZ</small><input id="h-area" required maxlength="60" placeholder="z. B. Ehrenfeld, Neuehrenfeld" value="${esc(h.area || "")}"></label>
+        <label class="f">Mein Gebiet <small>PLZ und Stadtteil, damit Kunden dich finden</small><input id="h-area" required maxlength="60" placeholder="z. B. 50823 Ehrenfeld, 50825" value="${esc(h.area || "")}"></label>
         <label class="f">Unterwegs mit<select id="h-transport">${["zu Fuß", "Fahrrad", "Lastenrad", "Auto", "ÖPNV"].map(t => `<option${h.transport === t ? " selected" : ""}>${t}</option>`).join("")}</select></label>
       </div>
       <div class="f" role="group" aria-labelledby="h-days-l"><span id="h-days-l" style="font-weight:600;font-size:14px">Wann kann ich?</span>
@@ -563,7 +713,7 @@ function vHelden() {
   return `<section class="intro"><h1>Alle Einkaufshelden</h1><p>Diese Leute gehen für andere einkaufen.</p></section>
     <div style="padding-block: 16px 56px">
     ${list.length ? `<div class="helpers">${list.map(([id, h]) => `<div class="hero-card">
-        <div class="who"><span>${esc(nameOf(id))}</span></div>
+        <div class="who"><span>${esc(nameOf(id))}</span>${starsHtml(ratingOf(id))}</div>
         <div><span class="k">Gebiet:</span> ${esc(h.area || "–")}</div>
         <div><span class="k">Mit:</span> ${esc(h.transport || "–")} · <span class="k">Tage:</span> ${esc((h.days || []).join(", ") || "flexibel")}</div>
         <div><span class="k">Geliefert:</span> ${counts[id] || 0}</div>
@@ -602,9 +752,14 @@ function render() {
   const focusId = active && active.id;
   const selStart = active && "selectionStart" in active ? active.selectionStart : null;
   const cur = view();
-  const formKey = S.myId + "|" + ((S.helpers[S.myId] && "h") || "") + "|" + S.confirm + "|" + S.payoutReady;
+  const formKey = S.myId + "|" + ((S.helpers[S.myId] && "h") || "") + "|" + S.confirm + "|" + S.payoutReady + "|" + (S.savedAddress ? "a" : "");
   if ((cur === "hilfe" || cur === "held" || cur === "konto") && S.renderedView === cur && S.formKey === formKey && v.querySelector("form")) return;
-  v.innerHTML = ({ auftraege: vAuftraege, hilfe: vHilfe, meine: vMeine, held: vHeld, helden: vHelden, konto: vKonto, betreiber: vBetreiber })[cur]();
+  // Eingetipptes in Textfeldern beim Neuaufbau derselben Ansicht behalten
+  const keep = {};
+  if (S.lastCur === cur) v.querySelectorAll("input[id]:not([type=checkbox]):not([type=file]), textarea[id]").forEach(el => { keep[el.id] = el.value; });
+  S.lastCur = cur;
+  v.innerHTML = ({ start: vStart, laden: () => vLaden(shopFromHash()), auftraege: vAuftraege, hilfe: vHilfe, meine: vMeine, held: vHeld, helden: vHelden, konto: vKonto, betreiber: vBetreiber })[cur]();
+  for (const [k, val] of Object.entries(keep)) { const el = document.getElementById(k); if (el && el.value !== val) el.value = val; }
   S.renderedView = cur; S.formKey = formKey;
   if (S.flash) { const m = $(S.flash.sel); if (m) { m.textContent = S.flash.text; m.className = "msg" + (S.flash.err ? " err" : ""); } S.flash = null; }
   if (focusId) { const el = document.getElementById(focusId); if (el && el !== document.activeElement) { el.focus(); try { if (selStart != null) el.setSelectionRange(selStart, selStart); } catch (e) {} } }
@@ -632,6 +787,11 @@ const authErr = (e) => ({
   "auth/popup-blocked": "Dein Browser hat das Anmeldefenster blockiert. Erlaube Pop-ups für diese Seite.",
   "auth/requires-recent-login": "Bitte melde dich einmal ab und wieder an, dann klappt es.",
 }[e && e.code] || "Das hat nicht geklappt. Versuch es noch einmal.");
+
+function readAddress() {
+  const v = (id) => ($("#" + id) || {}).value || "";
+  return { street: v("a-street").trim().slice(0, 80), zip: v("a-zip").trim(), city: v("a-city").trim().slice(0, 50), floor: v("a-floor").trim().slice(0, 80), phone: v("a-phone").trim().slice(0, 30) };
+}
 
 // ---------- Bezahlen ----------
 const fnErr = (e) => (e && e.message && !/^(internal|INTERNAL)$/.test(e.message)) ? e.message : "Das hat nicht geklappt. Versuch es gleich noch einmal.";
@@ -694,6 +854,8 @@ document.addEventListener("click", async (ev) => {
     S.renderedView = null; render(); return;
   }
   if (t.closest("#delAccount")) return deleteAccount();
+  const cb = t.closest("button[data-act^=cart], button[data-act=checkout]");
+  if (cb) return cartAction(cb);
   if (t.closest("#payoutSetup") || t.closest("#payoutDash")) {
     const setup = !!t.closest("#payoutSetup"); const m = $("#po-msg");
     if (m) { m.textContent = setup ? "Du wirst zu Stripe weitergeleitet …" : "Einen Moment …"; m.className = "msg"; }
@@ -718,6 +880,13 @@ document.addEventListener("click", async (ev) => {
   if (act === "admindel") { if (!confirmOnce("adel-" + id)) return; return withBusy(id, () => call("cancelRequest", { requestId: id })); }
   const r = S.requests.find(x => x.id === id);
   if (!r) return;
+  if (act === "star") { S.rateFor[id] = Number(b.dataset.n); S.renderedView = null; render(); return; }
+  if (act === "reorder") {
+    const ad = await getDoc(doc(db, "requests", id, "private", "address")).then(x => x.exists() ? x.data() : null).catch(() => null);
+    lastDraft = { title: r.title, items: (r.items || []).map(i => i.t).join("\n"), shops: (r.shops || []).filter(x => SHOPS.includes(x)), shopOther: (r.shops || []).filter(x => !SHOPS.includes(x)).join(", "),
+      budget: String(r.budget || ""), heavy: !!(r.feeParts && r.feeParts.heavy), window: r.window, note: r.note, address: ad || S.savedAddress || null };
+    S.renderedView = null; location.hash = "#hilfe"; return;
+  }
   if (act === "take") return take(id);
   if (act === "chat") return openChat(r);
   if (act === "pay") return startCheckout(id);
@@ -743,6 +912,25 @@ document.addEventListener("click", async (ev) => {
   }
 });
 
+function cartAction(b) {
+  const act = b.dataset.act, t = b.dataset.t;
+  const shop = shopFromHash();
+  if (act === "cartswitch") { S.cart = { shop: b.dataset.shop, items: [] }; }
+  if (act === "cart+" || act === "cart-") {
+    if (!S.cart.shop) S.cart.shop = shop;
+    const it = S.cart.items.find(x => x.t === t);
+    if (act === "cart+") { if (it) it.q = Math.min(it.q + 1, 20); else S.cart.items.push({ t, q: 1 }); }
+    else if (it) { it.q--; if (it.q <= 0) S.cart.items = S.cart.items.filter(x => x !== it); }
+    if (!S.cart.items.length) S.cart.shop = null;
+  }
+  if (act === "checkout") {
+    const d = lastDraft || {};
+    lastDraft = { ...d, title: d.title || `Einkauf bei ${S.cart.shop}`, items: S.cart.items.map(x => (x.q > 1 ? `${x.q} × ` : "") + x.t).join("\n"), shops: [S.cart.shop].filter(x => SHOPS.includes(x)), shopOther: "" };
+    S.renderedView = null; location.hash = "#hilfe"; return;
+  }
+  saveCart(); S.renderedView = null; render();
+}
+
 document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (t.id === "sort") { S.sort = t.value; S.renderedView = null; render(); return; }
@@ -762,7 +950,7 @@ document.addEventListener("input", (ev) => {
   }
   if (ev.target.closest("#reqForm")) {
     const c = $("#calc"); if (c) c.innerHTML = calcHtml();
-    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shops: [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value), shopOther: $("#r-shop-other").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, note: $("#r-note").value };
+    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, address: readAddress(), shops: [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value), shopOther: $("#r-shop-other").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, note: $("#r-note").value };
     try { localStorage.setItem("eh-draft", JSON.stringify(lastDraft)); } catch (e) {}
   }
 });
@@ -802,6 +990,25 @@ document.addEventListener("submit", async (ev) => {
     return;
   }
 
+  if (form.id === "plzForm") {
+    const v = $("#plz").value.trim();
+    if (!/^[0-9]{5}$/.test(v)) { toast("Bitte gib eine Postleitzahl mit 5 Ziffern ein."); return; }
+    S.plz = v; try { localStorage.setItem("eh-plz", v); } catch (e) {}
+    S.renderedView = null; render(); return;
+  }
+  if (form.id === "ownItem") {
+    const v = $("#own").value.trim().slice(0, 100); if (!v) return;
+    const shop = shopFromHash();
+    if (!S.cart.shop) S.cart.shop = shop;
+    const it = S.cart.items.find(x => x.t === v); if (it) it.q++; else S.cart.items.push({ t: v, q: 1 });
+    saveCart(); S.renderedView = null; render(); const o = $("#own"); if (o) { o.value = ""; o.focus(); } return;
+  }
+  if (form.classList.contains("rate")) {
+    const id = form.dataset.id; const r = S.requests.find(x => x.id === id); const stars = S.rateFor[id] || 0;
+    if (!r || !stars) return;
+    const text = form.querySelector("input").value.trim().slice(0, 300);
+    return withBusy(id, async () => { await setDoc(doc(db, "ratings", id), { helperId: r.helperId, by: S.myId, stars, text, at: serverTimestamp() }); toast("Danke für deine Bewertung!"); });
+  }
   if (form.classList.contains("receipt")) {
     const id = form.dataset.id;
     const r = S.requests.find(x => x.id === id); if (!r) return;
@@ -818,6 +1025,8 @@ document.addEventListener("submit", async (ev) => {
     if (!(b >= BUDGET.min && b <= BUDGET.max)) { setMsg("#r-msg", `Der Höchstbetrag muss zwischen ${euro(BUDGET.min)} und ${euro(BUDGET.max)} liegen.`, true); return; }
     const due = $("#r-due").value;
     if (!due || due < todayISO() || due > addDays(MAX_DAYS_AHEAD)) { setMsg("#r-msg", `Wähle ein Datum zwischen heute und in ${MAX_DAYS_AHEAD} Tagen.`, true); return; }
+    const address = readAddress();
+    if (address.street.length < 3 || !/^[0-9]{5}$/.test(address.zip) || address.city.length < 2) { setMsg("#r-msg", "Bitte gib Straße, PLZ (5 Ziffern) und Ort an.", true); return; }
     const shops = readShops();
     if (document.querySelectorAll("#reqForm input[name=shop]:checked").length + ($("#r-shop-other").value.split(",").filter(x => x.trim()).length) > MAX_SHOPS) {
       setMsg("#r-msg", `Bitte wähle höchstens ${MAX_SHOPS} Läden.`, true); return;
@@ -826,7 +1035,7 @@ document.addEventListener("submit", async (ev) => {
     const note = $("#r-note").value.trim().slice(0, 500);
     const data = {
       title: $("#r-title").value.trim().slice(0, 80), items,
-      area: $("#r-area").value.trim().slice(0, 60), due: $("#r-due").value || null,
+      area: `${address.zip} ${address.city}`.slice(0, 60), due: $("#r-due").value || null,
       window: $("#r-window").value, budget: b,
       payment: "online", note,
       shops, serviceFee: SERVICE_FEE,
@@ -838,7 +1047,10 @@ document.addEventListener("submit", async (ev) => {
     let ref;
     try {
       ref = await addDoc(collection(db, "requests"), data);
+      await setDoc(doc(db, "requests", ref.id, "private", "address"), address);
+      if ($("#a-save").checked) { await setDoc(doc(db, "addresses", S.myId), address); S.savedAddress = address; }
       lastDraft = null; try { localStorage.removeItem("eh-draft"); } catch (e) {}
+      S.cart = { shop: null, items: [] }; saveCart();
     } catch (e) { console.error(e); setMsg("#r-msg", errText(e), true); btn.disabled = false; return; }
     S.renderedView = null;
     location.hash = "#meine";
@@ -925,6 +1137,7 @@ async function deleteAccount() {
     const own = await getDocs(query(collection(db, "requests"), where("createdBy", "==", S.myId)));
     for (const d of own.docs) { const x = d.data(); if (["zahlung_offen", "abgelaufen"].includes(x.status) || x.transferId) await deleteDoc(d.ref); }
     await deleteDoc(doc(db, "helpers", S.myId)).catch(() => {});
+    await deleteDoc(doc(db, "addresses", S.myId)).catch(() => {});
     await deleteDoc(doc(db, "users", S.myId));
     stopData();
     await deleteUser(S.fbUser);
@@ -932,7 +1145,7 @@ async function deleteAccount() {
 }
 
 // ---------- Daten-Abos ----------
-function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); S.isAdmin = false; S.reports = []; S.payoutReady = null; }
+function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); S.isAdmin = false; S.reports = []; S.payoutReady = null; S.ratings = []; S.savedAddress = null; S.addresses = {}; loadingAddr.clear(); }
 
 function startData() {
   stopData();
@@ -951,6 +1164,12 @@ function startData() {
     S.loaded = true;
     render(); loadNames();
   }, (e) => { console.error(e); if (String(e.code).includes("permission")) return; S.error = "Die Aufträge konnten nicht geladen werden. Lade die Seite neu."; S.loaded = true; render(); }));
+
+  // Bewertungen (öffentlich) und eigene gemerkte Adresse
+  unsubs.push(onSnapshot(query(collection(db, "ratings"), limit(2000)), (snap) => {
+    S.ratings = snap.docs.map(d => Object.assign({ id: d.id }, d.data())); render();
+  }, (e) => console.error(e)));
+  getDoc(doc(db, "addresses", S.myId)).then(x => { S.savedAddress = x.exists() ? x.data() : null; if (S.savedAddress && !S.plz) S.plz = S.savedAddress.zip; render(); }).catch(() => {});
 
   // Auszahlungskonto (schreibt nur der Server)
   unsubs.push(onSnapshot(doc(db, "payoutStatus", S.myId), (snap) => {

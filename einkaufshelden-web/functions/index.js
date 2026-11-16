@@ -13,7 +13,7 @@
 // Im Firebase-Emulator (npm start) wird Stripe nur simuliert, es fließt kein Geld.
 
 import { onCall, onRequest, HttpsError } from "firebase-functions/v2/https";
-import { onDocumentUpdated } from "firebase-functions/v2/firestore";
+import { onDocumentUpdated, onDocumentDeleted } from "firebase-functions/v2/firestore";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineSecret, defineString } from "firebase-functions/params";
 import { setGlobalOptions, logger } from "firebase-functions/v2";
@@ -125,6 +125,7 @@ export const createCheckout = onCall({ secrets }, async (req) => {
   const r = snap.data();
   if (r.createdBy !== uid) throw new HttpsError("permission-denied", "Das ist nicht dein Auftrag.");
   if (r.status !== "zahlung_offen") throw new HttpsError("failed-precondition", "Dieser Auftrag ist schon bezahlt.");
+  if (!(await db.doc(`requests/${requestId}/private/address`).get()).exists) throw new HttpsError("failed-precondition", "Bitte gib zuerst deine Lieferadresse an.");
   let a;
   try { a = checkoutAmounts(r); } catch (e) { throw new HttpsError("invalid-argument", e.message); }
   const base = originOf(req);
@@ -221,6 +222,11 @@ export const hourlyJobs = onSchedule({ schedule: "every 60 minutes", timeZone: "
     } catch (e) { logger.warn("Reservierung schon aufgehoben", doc.id, e.message); }
     await doc.ref.update({ status: "abgelaufen", paid: false, expiredAt: FieldValue.serverTimestamp() });
   }
+});
+
+// Gelöschte Aufträge: Lieferadresse und Chat mit löschen (Unterdokumente bleiben sonst liegen).
+export const onRequestDeleted = onDocumentDeleted("requests/{id}", async (event) => {
+  await db.recursiveDelete(db.doc(`requests/${event.params.id}`));
 });
 
 // ---------- 4. Auszahlungskonto der Helden ----------
