@@ -12,9 +12,9 @@ const anon = () => env.unauthenticatedContext().firestore();
 
 const request = (over = {}) => ({
   title: "Wocheneinkauf", items: [{ t: "Milch", done: false }, { t: "Brot", done: false }],
-  area: "50823 Ehrenfeld", due: "2026-11-20", window: "egal", budget: 30, payment: "online", note: "",
+  area: "50823 Ehrenfeld", due: "2026-11-20", window: "16-18", budget: 30, payment: "online", note: "",
   fee: 3, feeParts: { base: 3, shops: 0, items: 0, heavy: 0, express: 0, extra: 0 },
-  shops: ["Aldi", "dm"], serviceFee: 0.2,
+  shops: ["Aldi", "dm"], serviceFee: 1.11, tip: 0, substitutes: "rueckfrage",
   status: "zahlung_offen", createdBy: ANNA, helperId: null, thanks: false, createdAt: serverTimestamp(), ...over,
 });
 const profile = (name) => ({ name, acceptedTerms: true, ageConfirmed: true, createdAt: serverTimestamp() });
@@ -121,11 +121,10 @@ test("Kompletter Ablauf mit Chat, unterwegs, Kassenbon und Bestätigung", async 
   // Zahlungsfelder kann niemand selbst setzen
   await assertFails(updateDoc(doc(db(BEN), "requests", "r1"), { transferId: "tr_fake" }));
   await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { receiptTotal: 1 }));
-  // Trinkgeld: nur Anna, nur einmal, max. 50 €
-  await assertFails(updateDoc(doc(db(BEN), "requests", "r1"), { thanks: true, tip: 50 }));
-  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { thanks: true, tip: 500 }));
-  await assertSucceeds(updateDoc(doc(db(ANNA), "requests", "r1"), { thanks: true, tip: 2 }));
-  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { tip: 5 }));
+  // Bestätigen: nur Anna; Trinkgeld lässt sich nachträglich nicht ändern
+  await assertFails(updateDoc(doc(db(BEN), "requests", "r1"), { thanks: true }));
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { thanks: true, tip: 5 }));
+  await assertSucceeds(updateDoc(doc(db(ANNA), "requests", "r1"), { thanks: true }));
 });
 
 test("Abgeben setzt den Auftrag zurück, nur durch den Helden", async () => {
@@ -150,11 +149,11 @@ test("Meldungen: anlegen ja, lesen nein", async () => {
   await assertFails(getDoc(doc(db(CARO), "reports", "x")));
 });
 
-test("Servicegebühr und Läden: Pflicht, nicht manipulierbar", async () => {
-  await assertFails(setDoc(doc(db(CARO), "requests", "s1"), request({ createdBy: CARO, serviceFee: 0 })));
-  await assertFails(setDoc(doc(db(CARO), "requests", "s2"), request({ createdBy: CARO, serviceFee: 0.1 })));
-  const { serviceFee, ...ohneGebuehr } = request({ createdBy: CARO });
-  await assertFails(setDoc(doc(db(CARO), "requests", "s3"), ohneGebuehr));
+test("Trinkgeld, Ersatz, Lieferzeit und Läden werden geprüft", async () => {
+  await assertFails(setDoc(doc(db(CARO), "requests", "s1"), request({ createdBy: CARO, tip: 50 })));
+  await assertFails(setDoc(doc(db(CARO), "requests", "s2"), request({ createdBy: CARO, substitutes: "egal" })));
+  await assertFails(setDoc(doc(db(CARO), "requests", "s3"), request({ createdBy: CARO, window: "03-05" })));
+  await assertSucceeds(setDoc(doc(db(CARO), "requests", "s6"), request({ createdBy: CARO, tip: 2, window: "asap", substitutes: "ja" })));
   await assertFails(setDoc(doc(db(CARO), "requests", "s4"), request({ createdBy: CARO, shops: ["a", "b", "c", "d", "e", "f", "g"] })));
   await assertSucceeds(setDoc(doc(db(CARO), "requests", "s5"), request({ createdBy: CARO, shops: ["Aldi", "Lidl", "Rewe"] })));
 });
@@ -206,4 +205,28 @@ test("Bewertung: nur der Kunde, nur nach Lieferung, nur einmal, 1–5 Sterne", a
   await assertSucceeds(setDoc(doc(db(ANNA), "ratings", "r1"), rate(5)));
   await assertFails(setDoc(doc(db(ANNA), "ratings", "r1"), rate(1)));            // nicht nachträglich ändern
   await assertSucceeds(getDoc(doc(db(CARO), "ratings", "r1")));
+});
+
+test("Reklamation: nur der Kunde, nur vor der Bestätigung, Betrag begrenzt", async () => {
+  const disp = (amount, text = "Die Eier waren kaputt.") => ({ dispute: { text, amount, status: "offen", at: serverTimestamp() } });
+  await assertSucceeds(updateDoc(doc(db(BEN), "requests", "r1"), { status: "uebernommen", helperId: BEN, takenAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), disp(2)));                 // noch nicht geliefert
+  await assertSucceeds(updateDoc(doc(db(BEN), "requests", "r1"), deliver(24.5)));
+  await assertFails(updateDoc(doc(db(BEN), "requests", "r1"), disp(2)));                  // nicht der Held
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), disp(100)));               // mehr als bezahlt
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { dispute: { text: "kaputt!", amount: 2, status: "erstattet", at: serverTimestamp() } }));
+  await assertSucceeds(updateDoc(doc(db(ANNA), "requests", "r1"), disp(2)));
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), { thanks: true }));        // erst klären
+  await assertFails(updateDoc(doc(db(ANNA), "requests", "r1"), disp(5, "Noch was anderes")));
+});
+
+test("Benachrichtigungen: nur das eigene Postfach, nur als gelesen markieren", async () => {
+  await asServer((fs) => setDoc(doc(fs, "notifications", "n1"), { to: ANNA, title: "Held gefunden", body: "x", link: "#meine", read: false }));
+  await assertSucceeds(getDoc(doc(db(ANNA), "notifications", "n1")));
+  await assertFails(getDoc(doc(db(BEN), "notifications", "n1")));
+  await assertFails(updateDoc(doc(db(ANNA), "notifications", "n1"), { title: "gefälscht" }));
+  await assertSucceeds(updateDoc(doc(db(ANNA), "notifications", "n1"), { read: true }));
+  await assertFails(setDoc(doc(db(ANNA), "notifications", "n2"), { to: BEN, title: "Spam", body: "", link: "", read: false }));
+  await assertSucceeds(setDoc(doc(db(ANNA), "pushTokens", ANNA), { tokens: ["abc"] }));
+  await assertFails(getDoc(doc(db(BEN), "pushTokens", ANNA)));
 });

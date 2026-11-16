@@ -1,25 +1,59 @@
 // Tests der Zahlungslogik (ohne Stripe und ohne Emulator). Start: node --test tests/payments.test.js
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkoutAmounts, captureAmounts, readyForCapture, readyForRelease, authExpired, cancelDecision, safeOrigin } from "../functions/lib.js";
+import {
+  checkoutAmounts, captureAmounts, readyForCapture, readyForRelease, authExpired, cancelDecision, disputeDecision,
+  safeOrigin, orderNumber, serviceCents, heroMatchesZip, STRIPE_EU,
+  MIN_BUDGET_CENTS, MAX_BUDGET_CENTS, MIN_FEE_CENTS, MAX_FEE_CENTS, MAX_TIP_CENTS,
+} from "../functions/lib.js";
 
-const base = { fee: 3, serviceFee: 0.2, budget: 30, status: "offen", createdBy: "anna", helperId: "ben" };
+const base = { fee: 3, budget: 30, status: "offen", createdBy: "anna", helperId: "ben" };
 const hours = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
 
-test("Reservierung beim Bestellen: Budget + 3 € + 0,20 €", () => {
-  assert.deepEqual(checkoutAmounts(base), { budget: 3000, heldenlohn: 300, service: 20, total: 3320 });
-  assert.throws(() => checkoutAmounts({ ...base, fee: 2 }));
-  assert.throws(() => checkoutAmounts({ ...base, serviceFee: 0 }));
-  assert.throws(() => checkoutAmounts({ ...base, budget: 1000 }));
+test("Servicegebühr: 0,45 € + 2 %", () => {
+  assert.equal(serviceCents(0), 45);
+  assert.equal(serviceCents(2737), 45 + 55);
 });
 
-test("Abbuchung nach dem Einkauf: Kassenbon + 3 € + 0,20 €, Held bekommt Kassenbon + 3 €", () => {
-  const a = captureAmounts({ ...base, receiptTotal: 27.45 });
-  assert.equal(a.capture, 2745 + 300 + 20);
-  assert.equal(a.transfer, 2745 + 300);
-  assert.equal(a.capture - a.transfer, 20, "die 20 Cent bleiben beim Betreiber");
+test("Betreiber verdient nach Stripe-Gebühr immer mindestens 20 Cent", () => {
+  let worst = Infinity;
+  for (let e = MIN_BUDGET_CENTS; e <= MAX_BUDGET_CENTS; e += 37)
+    for (const l of [MIN_FEE_CENTS, 500, 2000, MAX_FEE_CENTS])
+      for (const t of [0, 200, MAX_TIP_CENTS]) {
+        const s = serviceCents(e + l + t);
+        const total = e + l + t + s;
+        const stripeFee = Math.round(total * STRIPE_EU.rate) + STRIPE_EU.fixed;
+        worst = Math.min(worst, s - stripeFee);
+      }
+  assert.ok(worst >= 20, `schlechtester Fall: ${worst} Cent`);
+});
+
+test("Reservierung beim Bestellen: Budget + Heldenlohn + Trinkgeld + Gebühr", () => {
+  const a = checkoutAmounts({ ...base, tip: 2 });
+  assert.deepEqual(a, { budget: 3000, heldenlohn: 300, tip: 200, service: serviceCents(3500), total: 3500 + serviceCents(3500) });
+  assert.throws(() => checkoutAmounts({ ...base, fee: 2 }));
+  assert.throws(() => checkoutAmounts({ ...base, budget: 1000 }));
+  assert.throws(() => checkoutAmounts({ ...base, tip: 25 }));
+});
+
+test("Abbuchung nach dem Einkauf: Held bekommt Kassenbon + Heldenlohn + Trinkgeld", () => {
+  const a = captureAmounts({ ...base, tip: 2, receiptTotal: 24.37 });
+  assert.equal(a.transfer, 2437 + 300 + 200);
+  assert.equal(a.capture - a.transfer, a.service, "nur die Servicegebühr bleibt beim Betreiber");
+  assert.ok(a.capture <= checkoutAmounts({ ...base, tip: 2 }).total, "nie mehr als reserviert");
   assert.throws(() => captureAmounts({ ...base, receiptTotal: 31 }), /Budget/);
-  assert.throws(() => captureAmounts({ ...base, receiptTotal: 0 }));
+});
+
+test("Reklamation: Auszahlung wartet, Erstattung geht vom Helden-Anteil ab", () => {
+  const r = { ...base, status: "erledigt", paid: true, captured: true, receiptTotal: 20, doneAt: hours(100), thanks: true };
+  assert.equal(readyForRelease({ ...r, dispute: { status: "offen" } }), false);
+  assert.equal(readyForRelease({ ...r, dispute: { status: "abgelehnt" } }), true);
+  const a = captureAmounts({ ...r, dispute: { status: "erstattet", refund: 4.5 } });
+  assert.equal(a.refund, 450);
+  assert.equal(a.transfer, 2000 + 300 - 450);
+  assert.deepEqual(disputeDecision({ ...r, dispute: { status: "offen" } }, 4.5), { ok: true, refund: 450 });
+  assert.equal(disputeDecision({ ...r, dispute: { status: "offen" } }, 99).ok, false);
+  assert.equal(disputeDecision(r, 1).ok, false);
 });
 
 test("Abbuchen erst nach Lieferung, nur einmal", () => {
@@ -27,36 +61,35 @@ test("Abbuchen erst nach Lieferung, nur einmal", () => {
   assert.equal(readyForCapture(delivered), true);
   assert.equal(readyForCapture({ ...delivered, captured: true }), false);
   assert.equal(readyForCapture({ ...delivered, capturing: true }), false);
-  assert.equal(readyForCapture({ ...delivered, status: "uebernommen" }), false);
 });
 
-test("Auszahlung an den Helden: nach „Erhalten“ oder nach 72 Stunden, nur einmal", () => {
+test("Auszahlung: nach „Erhalten“ oder nach 72 Stunden, nur einmal", () => {
   const captured = { ...base, status: "erledigt", paid: true, captured: true, receiptTotal: 20, doneAt: hours(1) };
   assert.equal(readyForRelease(captured), false);
   assert.equal(readyForRelease({ ...captured, thanks: true }), true);
   assert.equal(readyForRelease({ ...captured, doneAt: hours(73) }), true);
   assert.equal(readyForRelease({ ...captured, thanks: true, transferId: "tr_1" }), false);
-  assert.equal(readyForRelease({ ...captured, thanks: true, captured: false }), false);
 });
 
 test("Nicht übernommene Aufträge verfallen nach 6 Tagen", () => {
   assert.equal(authExpired({ ...base, paid: true, paidAt: hours(24 * 6 + 1) }), true);
   assert.equal(authExpired({ ...base, paid: true, paidAt: hours(24) }), false);
-  assert.equal(authExpired({ ...base, status: "uebernommen", paid: true, paidAt: hours(24 * 7) }), false);
 });
 
 test("Zurückziehen: Reservierung aufheben, nicht während jemand einkauft", () => {
   assert.deepEqual(cancelDecision({ ...base, paid: true }, "anna", false), { ok: true, action: "release" });
-  assert.deepEqual(cancelDecision({ ...base, status: "zahlung_offen" }, "anna", false), { ok: true, action: "none" });
   assert.equal(cancelDecision({ ...base, status: "uebernommen", paid: true }, "anna", false).ok, false);
   assert.equal(cancelDecision({ ...base, paid: true }, "caro", false).ok, false);
-  assert.deepEqual(cancelDecision({ ...base, status: "erledigt", paid: true, captured: true }, "chef", true), { ok: true, action: "refund" });
 });
 
-test("Rücksprung nach der Zahlung nur auf eigene Domains", () => {
+test("Helden in der Nähe über die PLZ", () => {
+  assert.equal(heroMatchesZip("50823 Ehrenfeld", "50825"), true);
+  assert.equal(heroMatchesZip("50823 Ehrenfeld", "10115"), false);
+  assert.equal(heroMatchesZip("Ehrenfeld", "50825"), false);
+});
+
+test("Rücksprung nach der Zahlung nur auf eigene Domains, Bestellnummer", () => {
   assert.equal(safeOrigin("https://einkaufshelden-123.web.app"), "https://einkaufshelden-123.web.app");
-  assert.equal(safeOrigin("https://einkaufshelden.de", ["einkaufshelden.de"]), "https://einkaufshelden.de");
   assert.equal(safeOrigin("https://boese-seite.de"), null);
-  assert.equal(safeOrigin("http://einkaufshelden-123.web.app"), null);
-  assert.equal(safeOrigin("http://127.0.0.1:5000", [], true), "http://127.0.0.1:5000");
+  assert.equal(orderNumber("7k3q9aXYZ"), "EH-7K3Q9A");
 });

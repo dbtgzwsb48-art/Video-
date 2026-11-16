@@ -30,8 +30,6 @@ service cloud.firestore {
 
     // Mindest-Heldenlohn, muss zu FEE.base in public/app.js passen.
     function MIN_FEE() { return 3; }
-    // Servicegebühr je Einkauf für den Betreiber, muss zu SERVICE_FEE in public/app.js passen.
-    function SERVICE_FEE() { return 0.2; }
 
     // ---------- Profile ----------
     match /users/{userId} {
@@ -64,7 +62,7 @@ service cloud.firestore {
 
       allow create: if signedIn() && hasProfile()
         && newData().keys().hasOnly(['title', 'items', 'area', 'due', 'window', 'budget', 'payment', 'note',
-                                     'fee', 'feeParts', 'shops', 'serviceFee', 'status', 'createdBy', 'helperId', 'thanks', 'createdAt'])
+                                     'fee', 'feeParts', 'shops', 'serviceFee', 'tip', 'substitutes', 'status', 'createdBy', 'helperId', 'thanks', 'createdAt'])
         && newData().createdBy == uid()
         && newData().status == 'zahlung_offen'   // erst nach der Zahlung setzt der Server 'offen'
         && newData().helperId == null
@@ -75,11 +73,13 @@ service cloud.firestore {
         && text(newData().note, 0, 500)
         && newData().items is list && newData().items.size() >= 1 && newData().items.size() <= 60
         && newData().fee is number && newData().fee >= MIN_FEE() && newData().fee <= 100
-        && newData().serviceFee == SERVICE_FEE()
+        && newData().serviceFee is number   // nur zur Anzeige – abgerechnet wird auf dem Server
+        && newData().tip is number && newData().tip >= 0 && newData().tip <= 20
+        && newData().substitutes in ['ja', 'rueckfrage', 'nein']
         && newData().shops is list && newData().shops.size() <= 6
         && newData().budget is number && newData().budget >= 5 && newData().budget <= 300
         && newData().payment == 'online'
-        && newData().window in ['egal', 'vormittags', 'mittags', 'nachmittags', 'abends'];
+        && newData().window in ['asap', '08-10', '10-12', '12-14', '14-16', '16-18', '18-20'];
 
       allow update: if signedIn() && (
         // 1. Ein angemeldeter Held übernimmt einen offenen Auftrag (nicht den eigenen)
@@ -113,11 +113,22 @@ service cloud.firestore {
           && newData().items.size() == oldData().items.size()
           && changedOnly(['status', 'helperId', 'takenAt', 'items', 'onTheWay']))
 
-        // 6. Die anfragende Person bestätigt den Erhalt, optional mit Trinkgeld (max. 50 €)
+        // 6. Die anfragende Person bestätigt den Erhalt
         || (oldData().status == 'erledigt' && oldData().createdBy == uid() && oldData().thanks == false
+          && oldData().get('dispute', null) == null
           && newData().thanks == true
-          && (!('tip' in newData()) || (newData().tip is number && newData().tip >= 0 && newData().tip <= 50))
-          && changedOnly(['thanks', 'tip']))
+          && changedOnly(['thanks']))
+
+        // 7. … oder meldet ein Problem, solange noch nicht bestätigt und ausgezahlt
+        || (oldData().status == 'erledigt' && oldData().createdBy == uid() && oldData().thanks == false
+          && oldData().get('dispute', null) == null && oldData().get('transferId', null) == null
+          && newData().dispute.keys().hasOnly(['text', 'amount', 'status', 'at'])
+          && newData().dispute.status == 'offen'
+          && text(newData().dispute.text, 5, 500)
+          && newData().dispute.amount is number && newData().dispute.amount >= 0
+          && newData().dispute.amount <= oldData().receiptTotal + oldData().fee + oldData().get('tip', 0)
+          && newData().dispute.at == request.time
+          && changedOnly(['dispute']))
       );
 
       // Selbst löschen nur, solange nichts bezahlt ist, nach der Auszahlung oder nach Ablauf.
@@ -172,6 +183,19 @@ service cloud.firestore {
         && newData().at == request.time;
       allow delete: if isAdmin();
       allow update: if false;
+    }
+
+    // ---------- Benachrichtigungen (schreibt der Server, gelesen wird nur das eigene Postfach) ----------
+    match /notifications/{nId} {
+      allow read: if signedIn() && resource.data.to == uid();
+      allow update: if signedIn() && resource.data.to == uid() && newData().read == true && changedOnly(['read']);
+      allow create, delete: if false;
+    }
+    // Geräte für Push-Nachrichten
+    match /pushTokens/{userId} {
+      allow read, delete: if isMe(userId);
+      allow create, update: if isMe(userId) && newData().keys().hasOnly(['tokens'])
+        && newData().tokens is list && newData().tokens.size() <= 10;
     }
 
     // ---------- Betreiber ----------

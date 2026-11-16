@@ -10,13 +10,18 @@ import {
   addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, where, runTransaction, serverTimestamp,
 } from "./vendor/firebase-firestore.js";
 import { getFunctions, connectFunctionsEmulator, httpsCallable } from "./vendor/firebase-functions.js";
-import { firebaseConfig } from "./firebase-config.js";
+import * as cfg from "./firebase-config.js";
+const firebaseConfig = cfg.firebaseConfig;
 
 // ---------- Tarif ----------
 // Heldenlohn: Grundlohn + Artikelzuschlag ab dem 11. Artikel + Zuschläge. Muss zu firestore.rules passen (MIN_FEE).
 export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2, extraShop: 1 };
-// Servicegebühr je Einkauf für den Betreiber. Muss zu SERVICE_FEE() in firestore.rules passen.
-export const SERVICE_FEE = 0.2;
+// Servicegebühr wie bei Lieferdiensten: 0,45 € + 2 % von (Einkauf + Heldenlohn + Trinkgeld).
+// Deckt die Stripe-Gebühr, dem Betreiber bleiben mindestens ca. 0,23 €. Muss zu functions/lib.js passen.
+export const SERVICE = { base: 0.45, rate: 0.02 };
+export const serviceFor = (einkauf, lohn, tip = 0) => round2(SERVICE.base + Math.round((einkauf + lohn + tip) * 100 * SERVICE.rate) / 100);
+const TIPS = [0, 1, 2, 3, 5];
+const SUBST = { ja: "Ersatz erlaubt", rueckfrage: "Ersatz nur nach Rückfrage", nein: "Kein Ersatz" };
 const SHOPS = ["Aldi", "Lidl", "Rewe", "Edeka", "Penny", "Netto", "Kaufland", "Norma", "dm", "Rossmann", "Apotheke", "Getränkemarkt", "Bäckerei", "Wochenmarkt", "Bio-Laden", "Drogerie egal", "Supermarkt egal"];
 // Startseite: Läden nach Art, mit Vorschlägen für den Warenkorb
 const SHOP_KIND = {
@@ -51,7 +56,9 @@ const MAX_SHOPS = 6;
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const VIEWS = ["start", "auftraege", "hilfe", "meine", "held", "helden", "konto", "betreiber"];
-const WINDOWS = { egal: "egal wann", vormittags: "vormittags", mittags: "mittags", nachmittags: "nachmittags", abends: "abends" };
+const WINDOWS = { asap: "so schnell wie möglich", "08-10": "8–10 Uhr", "10-12": "10–12 Uhr", "12-14": "12–14 Uhr", "14-16": "14–16 Uhr", "16-18": "16–18 Uhr", "18-20": "18–20 Uhr",
+  egal: "egal wann", vormittags: "vormittags", mittags: "mittags", nachmittags: "nachmittags", abends: "abends" };   // die letzten fünf nur für alte Aufträge
+const SLOTS = ["asap", "08-10", "10-12", "12-14", "14-16", "16-18", "18-20"];
 const STATUS = { zahlung_offen: "Nicht bezahlt", offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert", abgelaufen: "Abgelaufen" };
 const BUDGET = { min: 5, max: 300 };   // muss zu firestore.rules und functions/lib.js passen
 const MAX_DAYS_AHEAD = 5;              // Kartenreservierungen halten nur ein paar Tage
@@ -73,7 +80,12 @@ export function calcFee(count, heavy, due, extra, shopCount = 1) {
   return parts;
 }
 const svc = (r) => typeof r.serviceFee === "number" ? r.serviceFee : 0;
-const earned = (r) => (typeof r.fee === "number" ? r.fee : 0);
+const orderNo = (id) => "EH-" + String(id).slice(0, 6).toUpperCase();   // wie orderNumber() in functions/lib.js
+const earned = (r) => (typeof r.fee === "number" ? r.fee : 0) + (typeof r.tip === "number" ? r.tip : 0);
+const tipOf = (r) => (typeof r.tip === "number" ? r.tip : 0);
+// Servicegebühr: geschätzt aus Budget, nach dem Einkauf exakt aus dem Kassenbon
+const svcMax = (r) => serviceFor(r.budget || 0, r.fee || 0, tipOf(r));
+const svcReal = (r) => r.captured ? round2(r.capturedAmount - r.receiptTotal - r.fee - tipOf(r)) : serviceFor(r.receiptTotal || r.budget || 0, r.fee || 0, tipOf(r));
 const receipt = (r) => (typeof r.receiptTotal === "number" ? r.receiptTotal : 0);
 const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
 const toDate = (t) => t && typeof t.toDate === "function" ? t.toDate() : (t ? new Date(t) : null);
@@ -84,9 +96,9 @@ const LOCAL = ["localhost", "127.0.0.1"].includes(location.hostname);
 const filledIn = firebaseConfig && firebaseConfig.apiKey && !String(firebaseConfig.apiKey).startsWith("HIER");
 const config = LOCAL && !filledIn ? { apiKey: "demo-key", authDomain: "demo-einkaufshelden.firebaseapp.com", projectId: "demo-einkaufshelden", appId: "demo" } : firebaseConfig;
 const configured = LOCAL || filledIn;
-let auth = null, db = null, fns = null;
+let auth = null, db = null, fns = null, fbApp = null;
 if (configured) {
-  const app = initializeApp(config);
+  const app = fbApp = initializeApp(config);
   auth = getAuth(app);
   auth.languageCode = "de";
   fns = getFunctions(app, "europe-west3");
@@ -112,7 +124,8 @@ const S = {
   filter: "", show: "offen", sort: "neu", busy: new Set(), confirm: null, flash: null,
   authMode: "login", renderedView: null, formKey: null,
   chatId: null, chatMsgs: [], unsubChat: null,
-  isAdmin: false, reports: [], payoutReady: null, deliverFor: null,
+  isAdmin: false, reports: [], payoutReady: null, deliverFor: null, disputeFor: null, notes: [], notesOpen: false, notesLoaded: false,
+  pushState: (typeof Notification !== "undefined" ? Notification.permission : "unsupported"),
   ratings: [], savedAddress: null, addresses: {}, rateFor: {}, cart: { shop: null, items: [] }, plz: "",
 };
 const unsubs = [];
@@ -183,7 +196,12 @@ const ago = (t) => {
 function renderHeader() {
   const me = $("#me");
   if (S.fbUser && S.profile) {
-    me.innerHTML = `<span>${esc(S.profile.name)}</span>${isHero() ? '<span class="cape">Held</span>' : ""}<button class="linkbtn" id="logout" type="button">Abmelden</button>`;
+    const unread = S.notes.filter(n => !n.read).length;
+    me.innerHTML = `<button class="bell" id="bell" type="button" aria-label="Benachrichtigungen${unread ? ", " + unread + " neu" : ""}" aria-expanded="${S.notesOpen}">
+        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5-6.7V3.5a2 2 0 1 0-4 0v.8A7 7 0 0 0 5 11v5l-2 2v1h18v-1l-2-2Z"/></svg>
+        ${unread ? `<span class="bell-n">${unread > 9 ? "9+" : unread}</span>` : ""}</button>
+      <span>${esc(S.profile.name)}</span>${isHero() ? '<span class="cape">Held</span>' : ""}<button class="linkbtn" id="logout" type="button">Abmelden</button>`;
+    renderNotes();
   } else me.innerHTML = "";
   const inApp = !!(S.fbUser && S.profile);
   $("#tabsWrap").hidden = !inApp;
@@ -204,6 +222,23 @@ function renderBanner() {
   else if (S.fbUser && S.fbUser.providerData.some(p => p.providerId === "password") && !S.fbUser.emailVerified)
     html = `<div class="notice">Bitte bestätige deine E-Mail-Adresse über den Link, den wir dir geschickt haben. <button class="linkbtn" id="resendVerify" type="button">Link erneut senden</button></div>`;
   $("#banner").innerHTML = html;
+}
+
+function renderNotes() {
+  const panel = $("#notes");
+  if (!panel) return;
+  panel.hidden = !S.notesOpen;
+  if (!S.notesOpen) return;
+  panel.innerHTML = `<div class="notes-head"><b>Benachrichtigungen</b>${S.notes.some(n => !n.read) ? `<button class="linkbtn" type="button" id="notesRead">Alle gelesen</button>` : ""}</div>
+    ${S.notes.length ? `<ul>${S.notes.map(n => `<li class="${n.read ? "" : "new"}"><button type="button" data-note="${esc(n.id)}"><b>${esc(n.title)}</b><span>${esc(n.body)}</span><time>${esc(ago(n.at))}</time></button></li>`).join("")}</ul>`
+      : `<p class="small" style="padding:12px">Noch nichts. Hier erscheint, wenn ein Held deinen Einkauf übernimmt, unterwegs ist oder geliefert hat.</p>`}
+    ${S.pushState === "default" ? `<div class="notes-foot"><button class="btn wide" type="button" id="pushOn">Auch aufs Handy schicken</button></div>` : ""}`;
+}
+function info(text) {
+  let el = $("#infoToast");
+  if (!el) { el = document.createElement("div"); el.id = "infoToast"; el.className = "info-toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
+  el.textContent = text; el.classList.add("show");
+  clearTimeout(info.t); info.t = setTimeout(() => el.classList.remove("show"), 5000);
 }
 
 function feeHint(r) {
@@ -237,7 +272,7 @@ function payLine(r) {
   if (r.status === "abgelaufen") return `<div><span class="k">Reservierung</span><span>aufgehoben</span></div>`;
   if (r.captured) return `<div><span class="k">Abgebucht</span><span>${euro(r.capturedAmount)}</span></div>`;
   if (r.paymentError) return `<div><span class="k">Zahlung</span><span class="warn">Problem – Betreiber informiert</span></div>`;
-  return `<div><span class="k">Reserviert</span><span>${euro(r.budget + r.fee + svc(r))}</span></div>`;
+  return `<div><span class="k">Reserviert</span><span>${euro(r.budget + r.fee + tipOf(r) + svcMax(r))}</span></div>`;
 }
 
 function addressBox(id) {
@@ -274,15 +309,25 @@ function card(r) {
         <label class="f">Betrag laut Kassenbon in € <small>höchstens ${euro(r.budget)}</small>
           <input id="rc-${id}" type="number" inputmode="decimal" min="0.01" max="${r.budget}" step="0.01" required placeholder="z. B. 24,37"></label>
         <div class="actions"><button class="btn primary" type="submit"${busy}>Geliefert melden</button><button class="btn ghost" type="button" data-act="deliver" data-id="${id}">Abbrechen</button></div>
-        <p class="small">Abgebucht werden dieser Betrag + ${euro(r.fee)} Heldenlohn + ${euro(svc(r))} Gebühr. Du bekommst Kassenbon-Betrag + Heldenlohn ausgezahlt. Gib den Kassenbon mit ab.</p>
+        <p class="small">Du bekommst Kassenbon-Betrag + ${euro(earned(r))} ${tipOf(r) ? "Heldenlohn und Trinkgeld" : "Heldenlohn"} ausgezahlt. Gib den Kassenbon mit der Ware ab.</p>
       </form>`;
   } else if (canTick) {
     if (!r.onTheWay) actions += `<button class="btn" data-act="onway" data-id="${id}"${busy}>Bin unterwegs</button>`;
     actions += `<button class="btn primary" data-act="deliver" data-id="${id}"${busy}>Geliefert</button>`;
     actions += `<button class="btn ghost" data-act="release" data-id="${id}"${busy}>Abgeben</button>`;
   }
-  if (mineReq && r.status === "erledigt" && !r.thanks) {
-    actions += `<button class="btn primary" data-act="thanks" data-id="${id}"${busy}>Erhalten, danke!</button>`;
+  if (mineReq && r.status === "erledigt" && !r.thanks && !r.dispute) {
+    if (S.disputeFor === r.id) {
+      actions += `<form class="dispute" data-id="${id}">
+          <label class="f">Was stimmt nicht?<textarea id="dp-${id}" required minlength="5" maxlength="500" placeholder="z. B. Eier waren kaputt, Kassenbon zeigt 4,50 € zu viel"></textarea></label>
+          <label class="f">Wie viel möchtest du zurück? <small>höchstens ${euro(r.receiptTotal + earned(r))}</small><input id="da-${id}" type="number" inputmode="decimal" min="0" max="${r.receiptTotal + earned(r)}" step="0.01" required placeholder="z. B. 2,49"></label>
+          <div class="actions"><button class="btn primary" type="submit"${busy}>Problem melden</button><button class="btn ghost" type="button" data-act="dispute" data-id="${id}">Abbrechen</button></div>
+          <p class="small">Die Auszahlung an den Helden wartet, bis wir den Fall geprüft haben. Du hörst von uns.</p>
+        </form>`;
+    } else {
+      actions += `<button class="btn primary" data-act="thanks" data-id="${id}"${busy}>Erhalten, danke!</button>`;
+      actions += `<button class="btn" data-act="dispute" data-id="${id}"${busy}>Problem melden</button>`;
+    }
   }
   const myRating = S.ratings.find(x => x.id === r.id);
   if (mineReq && r.status === "erledigt" && r.thanks && !myRating) {
@@ -302,19 +347,21 @@ function card(r) {
   }
   if (!mineReq && !mineJob) actions += `<button class="btn ghost" data-act="report" data-id="${id}"${busy}>${S.confirm === "rep-" + r.id ? "Wirklich melden?" : "Melden"}</button>`;
 
+  const disputeNote = r.dispute && (mineReq || mineJob || S.isAdmin)
+    ? `<p class="note dispute-note"><b>Reklamation ${r.dispute.status === "offen" ? "wird geprüft" : r.dispute.status === "erstattet" ? `erledigt: ${euro(r.dispute.refund)} erstattet` : "geprüft: keine Erstattung"}.</b> „${esc(r.dispute.text)}“</p>` : "";
   const hint = mineReq && r.status === "zahlung_offen" ? `<p class="note">Bezahl den Auftrag, dann sehen ihn die Helden. Auf deiner Karte wird zunächst nur der Höchstbetrag reserviert.</p>`
     : mineReq && r.status === "abgelaufen" ? `<p class="note">Leider hat niemand rechtzeitig übernommen. Die Reservierung auf deiner Karte ist aufgehoben, es wurde nichts abgebucht.</p>`
     : mineJob && r.status === "erledigt" ? `<p class="note">${r.transferId ? `${euro(r.transferredAmount)} an dich ausgezahlt.` : r.transferError ? "Auszahlung verzögert – prüfe dein Auszahlungskonto." : `Wird ausgezahlt, sobald ${esc(nameOf(r.createdBy))} den Erhalt bestätigt, spätestens nach 72 Stunden.`}</p>` : "";
 
   return `<article class="bon">
     <div class="head">
-      <div class="where">${esc(r.area || "Ort offen")} · ${fmtDate(r.due)}${r.window && r.window !== "egal" ? ", " + esc(WINDOWS[r.window] || r.window) : ""}</div>
+      <div class="where">${(mineReq || mineJob) && r.status !== "zahlung_offen" ? `<b>${orderNo(r.id)}</b> · ` : ""}${esc(r.area || "Ort offen")} · ${r.window === "asap" ? "so schnell wie möglich" : fmtDate(r.due) + (r.window && r.window !== "egal" ? ", " + esc(WINDOWS[r.window] || r.window) : "")}</div>
       <span class="pill ${esc(r.status)}">${STATUS[r.status] || esc(r.status)}</span>
     </div>
     <h3>${esc(r.title || "Einkauf")}</h3>
     ${Array.isArray(r.shops) && r.shops.length ? `<div class="shops">${r.shops.map(x => `<span>${esc(x)}</span>`).join("")}</div>` : ""}
     ${(mineReq || mineJob) ? timeline(r) : ""}
-    ${typeof r.fee === "number" ? `<div class="lohn"><div><span class="k">Heldenlohn</span><small>${esc(feeHint(r))}</small></div><b>${euro(earned(r))}</b></div>` : ""}
+    ${typeof r.fee === "number" ? `<div class="lohn"><div><span class="k">Heldenlohn${tipOf(r) ? " + Trinkgeld" : ""}</span><small>${esc(feeHint(r))}${tipOf(r) ? " · " + euro(tipOf(r)) + " Trinkgeld" : ""}</small></div><b>${euro(earned(r))}</b></div>` : ""}
     <ul class="items">${items.map((it, i) => `<li class="${it.done ? "done" : ""}">${canTick
       ? `<input type="checkbox" id="it-${id}-${i}" data-act="tick" data-id="${id}" data-i="${i}"${it.done ? " checked" : ""}${busy}><label for="it-${id}-${i}"><span>${esc(it.t)}</span></label>`
       : `<span class="dot">${it.done ? "✓" : "·"}</span><span>${esc(it.t)}</span>`}</li>`).join("")}</ul>
@@ -326,6 +373,8 @@ function card(r) {
     </div>
     ${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}
     ${mineJob && r.status === "uebernommen" ? addressBox(r.id) : ""}
+    ${(mineJob || r.status === "offen") && r.substitutes ? `<p class="note"><b>${esc(SUBST[r.substitutes] || "")}</b>${r.substitutes === "rueckfrage" ? " – frag im Chat nach, wenn etwas fehlt." : ""}</p>` : ""}
+    ${disputeNote}
     ${myRating ? `<p class="note">Deine Bewertung: <span class="stars">${"★".repeat(myRating.stars)}${"☆".repeat(5 - myRating.stars)}</span>${myRating.text ? " – „" + esc(myRating.text) + "“" : ""}</p>` : ""}
     ${hint}
     <div class="people">
@@ -354,7 +403,7 @@ function tarifPanel() {
       <div><dt>Express, noch heute</dt><dd>+ ${euro(FEE.express)}</dd></div>
       <div><dt>Extra und Trinkgeld</dt><dd>freiwillig</dd></div>
     </dl>
-    <p class="small">Dazu kommt eine Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf für den Betrieb von Einkaufshelden.</p>
+    <p class="small">Dazu kommt eine Servicegebühr von ${euro(SERVICE.base)} + ${Math.round(SERVICE.rate * 100)} % für Bezahlung und Betrieb. Trinkgeld geht zu 100 % an deinen Helden.</p>
   </section>`;
 }
 
@@ -474,7 +523,7 @@ function vLaden(shop) {
         <h2>Warenkorb${S.cart.shop ? " · " + esc(S.cart.shop) : ""}</h2>
         ${S.cart.items.length ? `<ul class="cart-list">${S.cart.items.map(x => `<li><span>${x.q} × ${esc(x.t)}</span><span class="qty"><button type="button" data-act="cart-" data-t="${esc(x.t)}" aria-label="Weniger">−</button><button type="button" data-act="cart+" data-t="${esc(x.t)}" aria-label="Mehr">+</button></span></li>`).join("")}</ul>`
           : `<p class="small">Noch leer. Tipp auf + bei einem Artikel.</p>`}
-        <dl class="tarif"><div><dt>Heldenlohn ab</dt><dd>${euro(FEE.base)}</dd></div><div><dt>Servicegebühr</dt><dd>${euro(SERVICE_FEE)}</dd></div></dl>
+        <dl class="tarif"><div><dt>Heldenlohn ab</dt><dd>${euro(FEE.base)}</dd></div><div><dt>Servicegebühr</dt><dd>${euro(SERVICE.base)} + ${Math.round(SERVICE.rate * 100)} %</dd></div></dl>
         <button class="btn primary wide" type="button" data-act="checkout"${n ? "" : " disabled"}>Zur Kasse${n ? ` (${n} ${n === 1 ? "Artikel" : "Artikel"})` : ""}</button>
       </section>
     </aside></div>
@@ -531,6 +580,8 @@ function calcHtml() {
   const bEl = document.getElementById("r-budget");
   const budget = Math.max(0, parseFloat(String(bEl ? bEl.value : ((lastDraft || {}).budget || "")).replace(",", ".")) || 0);
   const line = (k, v, show = true) => show ? `<div><span class="muted">${k}</span><span>${euro(v)}</span></div>` : "";
+  const tip = readTip();
+  const svcHi = serviceFor(budget, p.total, tip);
   return `<div><b>Heldenlohn für deinen Helden</b><span></span></div>
     ${line("Grundlohn", p.base)}
     ${line(`${shops - 1} weitere${shops - 1 === 1 ? "r Laden" : " Läden"} × ${euro(FEE.extraShop)}`, p.shops, p.shops > 0)}
@@ -539,10 +590,16 @@ function calcHtml() {
     ${line("Express, noch heute", p.express, p.express > 0)}
     ${line("Extra von dir", p.extra, p.extra > 0)}
     <div class="sum"><span>Heldenlohn</span><span>${euro(p.total)}</span></div>
-    <div><span class="muted">Servicegebühr Einkaufshelden</span><span>${euro(SERVICE_FEE)}</span></div>
+    ${line("Trinkgeld, 100 % für den Helden", tip, tip > 0)}
     <div><span class="muted">Einkauf, höchstens</span><span>${budget ? euro(budget) : "–"}</span></div>
-    <div class="sum"><span>Jetzt auf der Karte reserviert</span><span>${budget ? euro(budget + p.total + SERVICE_FEE) : "–"}</span></div>
-    <div class="muted" style="font-size:12px">Abgebucht wird erst nach dem Einkauf: Betrag vom Kassenbon + ${euro(p.total)} Heldenlohn + ${euro(SERVICE_FEE)} Gebühr. Den Rest gibt deine Bank wieder frei.</div>`;
+    <div><span class="muted">Servicegebühr, höchstens (${euro(SERVICE.base)} + ${Math.round(SERVICE.rate * 100)} %)</span><span>${budget ? euro(svcHi) : "–"}</span></div>
+    <div class="sum"><span>Jetzt auf der Karte reserviert</span><span>${budget ? euro(budget + p.total + tip + svcHi) : "–"}</span></div>
+    <div class="muted" style="font-size:12px">Abgebucht wird erst nach dem Einkauf, mit dem echten Betrag vom Kassenbon. Beispiel: Kassenbon ${euro(Math.round(budget * 0.8) || 20)} → ${euro((Math.round(budget * 0.8) || 20) + p.total + tip + serviceFor(Math.round(budget * 0.8) || 20, p.total, tip))} insgesamt. Den Rest gibt deine Bank wieder frei.</div>`;
+}
+
+function readTip() {
+  const el = document.querySelector("#reqForm input[name=tip]:checked");
+  return el ? Number(el.value) : Number((lastDraft || {}).tip || 0);
 }
 
 function vHilfe() {
@@ -577,12 +634,18 @@ function vHilfe() {
       </div>
       <div class="row">
         <label class="f">Bis wann? <small>höchstens ${MAX_DAYS_AHEAD} Tage im Voraus</small><input id="r-due" type="date" min="${todayISO()}" max="${addDays(MAX_DAYS_AHEAD)}" required value="${esc(d.due && d.due <= addDays(MAX_DAYS_AHEAD) && d.due >= todayISO() ? d.due : tomorrow)}"></label>
-        <label class="f">Tageszeit<select id="r-window">${Object.entries(WINDOWS).map(([k, v]) => `<option value="${k}"${(d.window || "egal") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+        <label class="f">Lieferzeit<select id="r-window">${SLOTS.map(k => `<option value="${k}"${(SLOTS.includes(d.window) ? d.window : "asap") === k ? " selected" : ""}>${WINDOWS[k]}</option>`).join("")}</select></label>
       </div>
       <label class="f">Höchstbetrag für den Einkauf in € <small>${euro(BUDGET.min)} bis ${euro(BUDGET.max)}. Teurer darf der Kassenbon nicht werden.</small><input id="r-budget" type="number" min="${BUDGET.min}" max="${BUDGET.max}" step="1" inputmode="decimal" required placeholder="z. B. 40" value="${esc(d.budget || "")}"></label>
       <div class="row">
         <label class="f" style="display:flex;gap:8px;align-items:center;font-weight:500"><input id="r-heavy" type="checkbox" style="width:auto"${d.heavy ? " checked" : ""}> Schwere Sachen dabei (Getränkekisten, Katzenstreu …)</label>
         <label class="f">Extra-Lohn drauflegen in € <small>Optional</small><input id="r-extra" type="number" min="0" max="50" step="0.5" inputmode="decimal" placeholder="0" value="${esc(d.extra || "")}"></label>
+      </div>
+      <div class="f" role="radiogroup" aria-labelledby="r-sub-l"><span id="r-sub-l" style="font-weight:600;font-size:14px">Wenn etwas ausverkauft ist</span>
+        <div class="checks">${Object.entries(SUBST).map(([k, v]) => `<label><input type="radio" name="subst" value="${k}"${(d.substitutes || "rueckfrage") === k ? " checked" : ""}>${v}</label>`).join("")}</div>
+      </div>
+      <div class="f" role="radiogroup" aria-labelledby="r-tip-l"><span id="r-tip-l" style="font-weight:600;font-size:14px">Trinkgeld für deinen Helden <small style="font-weight:400;color:var(--muted)">geht zu 100 % an ihn</small></span>
+        <div class="checks">${TIPS.map(t => `<label><input type="radio" name="tip" value="${t}"${Number(d.tip || 0) === t ? " checked" : ""}>${t ? euro(t) : "Kein Trinkgeld"}</label>`).join("")}</div>
       </div>
       <div class="calc" id="calc" aria-live="polite">${calcHtml()}</div>
       <label class="f">Hinweise <small>Optional, für alle sichtbar. Keine Adresse!</small><textarea id="r-note" maxlength="400" placeholder="Bitte laktosefreie Milch, falls es keine gibt. Ich wohne im 3. OG ohne Aufzug.">${esc(d.note || "")}</textarea></label>
@@ -609,7 +672,7 @@ function earnBox(jobs) {
       <div><b>${euro(sum(waiting) + waiting.reduce((a, r) => a + receipt(r), 0))}</b><span>wird gerade ausgezahlt (inkl. Einkauf)</span></div>
       <div><b>${euro(paidOut)}</b><span>an dich überwiesen (inkl. Einkauf)</span></div>
     </div>
-    <p class="small" style="margin-top:8px">Du bekommst Kassenbon-Betrag + Heldenlohn auf dein Bankkonto, sobald der Kunde den Erhalt bestätigt, spätestens nach 72 Stunden. ${pending.length ? `Gerade unterwegs: ${pending.length} ${pending.length === 1 ? "Auftrag" : "Aufträge"} mit ${euro(sum(pending))} Heldenlohn.` : ""} Einnahmen musst du ggf. selbst versteuern.</p>
+    <p class="small" style="margin-top:8px">Du bekommst Kassenbon-Betrag + Heldenlohn + Trinkgeld auf dein Bankkonto, sobald der Kunde den Erhalt bestätigt, spätestens nach 72 Stunden. ${pending.length ? `Gerade unterwegs: ${pending.length} ${pending.length === 1 ? "Auftrag" : "Aufträge"} mit ${euro(sum(pending))} Heldenlohn.` : ""} Einnahmen musst du ggf. selbst versteuern.</p>
   </section>`;
 }
 
@@ -618,10 +681,12 @@ function vBetreiber() {
   const month = todayISO().slice(0, 7);
   const captured = S.requests.filter(r => r.captured);
   const inMonth = (r) => { const d = toDate(r.doneAt); return d && d.toISOString().slice(0, 7) === month; };
-  const fees = (l) => round2(l.reduce((a, r) => a + svc(r), 0));
+  const fees = (l) => round2(l.reduce((a, r) => a + svcReal(r), 0));
+  const disputes = S.requests.filter(r => r.dispute && r.dispute.status === "offen");
   const problems = S.requests.filter(r => r.paymentError || r.transferError);
   const reserved = S.requests.filter(r => r.paid && !r.captured && ["offen", "uebernommen"].includes(r.status));
-  return `<section class="intro"><h1>Betreiber</h1><p>Deine Einnahmen aus der Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf. Das Geld liegt auf deinem Stripe-Konto und wird automatisch auf dein Bankkonto überwiesen.</p></section>
+  const stripeEst = (l) => round2(l.reduce((a, r) => a + r.capturedAmount * 0.015 + 0.25, 0));
+  return `<section class="intro"><h1>Betreiber</h1><p>Deine Einnahmen aus der Servicegebühr (${euro(SERVICE.base)} + ${Math.round(SERVICE.rate * 100)} %). Das Geld liegt auf deinem Stripe-Konto und wird automatisch auf dein Bankkonto überwiesen.</p></section>
     <div class="stack" style="padding-block:16px 56px">
       <section><div class="earn">
         <div><b>${euro(fees(captured.filter(inMonth)))}</b><span>Servicegebühren diesen Monat</span></div>
@@ -629,7 +694,18 @@ function vBetreiber() {
         <div><b>${reserved.length}</b><span>bezahlte Aufträge in Arbeit</span></div>
         <div><b>${problems.length}</b><span>Zahlungsprobleme</span></div>
       </div>
-      <p class="small" style="margin-top:8px">Stripe zieht pro Zahlung eine eigene Gebühr ab (etwa 1,5 % + 0,25 €). Die genauen Beträge siehst du im Stripe-Dashboard.</p></section>
+      <p class="small" style="margin-top:8px">Davon gehen geschätzt ${euro(stripeEst(captured))} an Stripe (ca. 1,5 % + 0,25 € je Zahlung), dir bleiben also etwa <b>${euro(round2(fees(captured) - stripeEst(captured)))}</b>. Die genauen Beträge siehst du im Stripe-Dashboard.</p></section>
+      ${disputes.length ? `<section><h2 class="section-title">Reklamationen</h2><div class="stack">${disputes.map(r => `<div class="card dispute-card">
+          <div><b>${orderNo(r.id)}</b> · ${esc(r.title)} · Kunde ${esc(nameOf(r.createdBy))} · Held ${esc(nameOf(r.helperId))} ${starsHtml(ratingOf(r.helperId))}</div>
+          <p>„${esc(r.dispute.text)}“</p>
+          <div class="meta"><div><span class="k">Kassenbon</span><span>${euro(r.receiptTotal)}</span></div><div><span class="k">Heldenlohn + Trinkgeld</span><span>${euro(earned(r))}</span></div><div><span class="k">Gewünscht zurück</span><span>${euro(r.dispute.amount)}</span></div></div>
+          <form class="resolve actions" data-id="${esc(r.id)}">
+            <label class="f" style="flex:1 1 160px">Erstatten in €<input id="rs-${esc(r.id)}" type="number" inputmode="decimal" min="0" max="${r.receiptTotal + earned(r)}" step="0.01" value="${r.dispute.amount}"></label>
+            <button class="btn primary" type="submit">Erstatten</button>
+            <button class="btn" type="button" data-act="reject" data-id="${esc(r.id)}">Ablehnen</button>
+          </form>
+          <p class="small">Die Erstattung geht vom Betrag ab, den der Held bekommt. Danach wird automatisch ausgezahlt. Sprich im Zweifel vorher mit beiden.</p>
+        </div>`).join("")}</div></section>` : ""}
       ${problems.length ? `<section><h2 class="section-title">Zahlungsprobleme</h2><div class="tbl"><table><thead><tr><th>Auftrag</th><th>Kunde</th><th>Held</th><th>Problem</th></tr></thead><tbody>
         ${problems.map(r => `<tr><td>${esc(r.title)}<br><small class="sel">${esc(r.id)}</small></td><td>${esc(nameOf(r.createdBy))}</td><td>${esc(nameOf(r.helperId))}</td><td>${esc(r.paymentError || r.transferError)}</td></tr>`).join("")}
       </tbody></table></div><p class="small">Die App versucht es stündlich erneut. Hilft das nicht, schau im Stripe-Dashboard unter der Auftragsnummer nach.</p></section>` : ""}
@@ -675,6 +751,7 @@ function vHeld() {
     </section>
     <div class="layout"><div class="stack">
     ${registered ? payoutBox() : ""}
+    ${registered && S.pushState === "default" ? `<section class="card payout"><h2>Neue Aufträge nicht verpassen</h2><p>Schalte Benachrichtigungen ein, dann meldet sich die App, sobald jemand in deiner Nähe etwas braucht.</p><div class="actions"><button class="btn primary" type="button" id="pushOn">Benachrichtigungen einschalten</button></div></section>` : ""}
     <form class="card" id="heroForm" autocomplete="off">
       <div class="row">
         <label class="f">Mein Gebiet <small>PLZ und Stadtteil, damit Kunden dich finden</small><input id="h-area" required maxlength="60" placeholder="z. B. 50823 Ehrenfeld, 50825" value="${esc(h.area || "")}"></label>
@@ -731,6 +808,14 @@ function vKonto() {
         <label class="f">Name <small>für alle Mitglieder sichtbar</small><input id="k-name" required minlength="2" maxlength="40" value="${esc(S.profile.name)}"></label>
         <div class="form-foot"><button class="btn primary" type="submit">Speichern</button><span class="msg" id="k-msg" role="status"></span></div>
       </form>
+      <section class="card" style="display:grid;gap:12px">
+        <h2>Benachrichtigungen aufs Handy</h2>
+        <p class="small">${S.pushState === "granted" ? "Eingeschaltet. Du bekommst eine Nachricht, wenn sich bei deinen Einkäufen etwas tut" + (isHero() ? " und wenn es neue Aufträge in deiner Nähe gibt." : ".")
+          : S.pushState === "denied" ? "Dein Browser blockiert Benachrichtigungen für diese Seite. Du kannst das in den Browser-Einstellungen ändern."
+          : S.pushState === "unsupported" ? "Dein Browser unterstützt keine Benachrichtigungen. Auf dem iPhone geht es, wenn du Einkaufshelden zum Home-Bildschirm hinzufügst."
+          : "Lass dich benachrichtigen, wenn ein Held deinen Einkauf übernimmt, unterwegs ist oder geliefert hat" + (isHero() ? ", und bei neuen Aufträgen in deiner Nähe." : ".")}</p>
+        ${S.pushState === "default" ? `<div class="form-foot"><button class="btn primary" type="button" id="pushOn">Einschalten</button><span class="msg" id="push-msg" role="status"></span></div>` : ""}
+      </section>
       <section class="card" style="display:grid;gap:12px">
         <h2>Konto löschen</h2>
         <p class="small">Löscht dein Profil, dein Heldenprofil, deine offenen und erledigten Anfragen und dein Login. Aufträge, die gerade jemand für dich einkauft, musst du vorher abschließen.</p>
@@ -791,6 +876,27 @@ const authErr = (e) => ({
 function readAddress() {
   const v = (id) => ($("#" + id) || {}).value || "";
   return { street: v("a-street").trim().slice(0, 80), zip: v("a-zip").trim(), city: v("a-city").trim().slice(0, 50), floor: v("a-floor").trim().slice(0, 80), phone: v("a-phone").trim().slice(0, 30) };
+}
+
+// ---------- Push-Benachrichtigungen ----------
+async function enablePush() {
+  const m = $("#push-msg");
+  const say = (t, err) => { if (m) { m.textContent = t; m.className = "msg" + (err ? " err" : ""); } else info(t); };
+  try {
+    if (typeof Notification === "undefined" || !("serviceWorker" in navigator)) { S.pushState = "unsupported"; S.renderedView = null; render(); return; }
+    const perm = await Notification.requestPermission();
+    S.pushState = perm; S.renderedView = null; render();
+    if (perm !== "granted") return;
+    if (LOCAL) { say("Im Testmodus gibt es nur die Benachrichtigungen in der App (Glocke oben)."); return; }
+    if (!cfg.vapidKey || String(cfg.vapidKey).startsWith("HIER")) { say("Push ist noch nicht eingerichtet (VAPID-Schlüssel fehlt in firebase-config.js).", true); return; }
+    const msg = await import("./vendor/firebase-messaging.js");
+    if (!(await msg.isSupported())) { S.pushState = "unsupported"; S.renderedView = null; render(); return; }
+    const token = await msg.getToken(msg.getMessaging(fbApp), { vapidKey: cfg.vapidKey, serviceWorkerRegistration: await navigator.serviceWorker.ready });
+    const ref = doc(db, "pushTokens", S.myId);
+    const cur = await getDoc(ref).then(x => (x.exists() ? x.data().tokens : []) || []).catch(() => []);
+    await setDoc(ref, { tokens: [...new Set([token, ...cur])].slice(0, 10) });
+    info("Benachrichtigungen sind eingeschaltet.");
+  } catch (e) { console.error(e); say("Das hat nicht geklappt. Versuch es später noch einmal.", true); }
 }
 
 // ---------- Bezahlen ----------
@@ -854,6 +960,18 @@ document.addEventListener("click", async (ev) => {
     S.renderedView = null; render(); return;
   }
   if (t.closest("#delAccount")) return deleteAccount();
+  if (t.closest("#bell")) { S.notesOpen = !S.notesOpen; renderHeader(); return; }
+  if (S.notesOpen && !t.closest("#notes")) { S.notesOpen = false; renderHeader(); }
+  if (t.closest("#notesRead")) { S.notes.filter(n => !n.read).forEach(n => updateDoc(doc(db, "notifications", n.id), { read: true }).catch(() => {})); return; }
+  const nb = t.closest("[data-note]");
+  if (nb) {
+    const n = S.notes.find(x => x.id === nb.dataset.note);
+    if (n && !n.read) updateDoc(doc(db, "notifications", n.id), { read: true }).catch(() => {});
+    S.notesOpen = false; renderHeader();
+    if (n && n.link) { if (location.hash === n.link) { S.renderedView = null; render(); } else location.hash = n.link; }
+    return;
+  }
+  if (t.closest("#pushOn")) return enablePush();
   const cb = t.closest("button[data-act^=cart], button[data-act=checkout]");
   if (cb) return cartAction(cb);
   if (t.closest("#payoutSetup") || t.closest("#payoutDash")) {
@@ -880,11 +998,13 @@ document.addEventListener("click", async (ev) => {
   if (act === "admindel") { if (!confirmOnce("adel-" + id)) return; return withBusy(id, () => call("cancelRequest", { requestId: id })); }
   const r = S.requests.find(x => x.id === id);
   if (!r) return;
+  if (act === "dispute") { S.disputeFor = S.disputeFor === id ? null : id; S.renderedView = null; render(); return; }
+  if (act === "reject") { if (!confirmOnce("rej-" + id)) return; return withBusy(id, async () => { await call("resolveDispute", { requestId: id, refund: 0 }); info("Reklamation abgelehnt, der Held wird ausgezahlt."); }); }
   if (act === "star") { S.rateFor[id] = Number(b.dataset.n); S.renderedView = null; render(); return; }
   if (act === "reorder") {
     const ad = await getDoc(doc(db, "requests", id, "private", "address")).then(x => x.exists() ? x.data() : null).catch(() => null);
     lastDraft = { title: r.title, items: (r.items || []).map(i => i.t).join("\n"), shops: (r.shops || []).filter(x => SHOPS.includes(x)), shopOther: (r.shops || []).filter(x => !SHOPS.includes(x)).join(", "),
-      budget: String(r.budget || ""), heavy: !!(r.feeParts && r.feeParts.heavy), window: r.window, note: r.note, address: ad || S.savedAddress || null };
+      budget: String(r.budget || ""), heavy: !!(r.feeParts && r.feeParts.heavy), window: r.window, note: r.note, address: ad || S.savedAddress || null, tip: tipOf(r), substitutes: r.substitutes };
     S.renderedView = null; location.hash = "#hilfe"; return;
   }
   if (act === "take") return take(id);
@@ -950,7 +1070,7 @@ document.addEventListener("input", (ev) => {
   }
   if (ev.target.closest("#reqForm")) {
     const c = $("#calc"); if (c) c.innerHTML = calcHtml();
-    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, address: readAddress(), shops: [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value), shopOther: $("#r-shop-other").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, note: $("#r-note").value };
+    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, address: readAddress(), shops: [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value), shopOther: $("#r-shop-other").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, note: $("#r-note").value, tip: readTip(), substitutes: (document.querySelector("#reqForm input[name=subst]:checked") || {}).value };
     try { localStorage.setItem("eh-draft", JSON.stringify(lastDraft)); } catch (e) {}
   }
 });
@@ -1003,6 +1123,20 @@ document.addEventListener("submit", async (ev) => {
     const it = S.cart.items.find(x => x.t === v); if (it) it.q++; else S.cart.items.push({ t: v, q: 1 });
     saveCart(); S.renderedView = null; render(); const o = $("#own"); if (o) { o.value = ""; o.focus(); } return;
   }
+  if (form.classList.contains("dispute")) {
+    const id = form.dataset.id; const r = S.requests.find(x => x.id === id); if (!r) return;
+    const text = form.querySelector("textarea").value.trim().slice(0, 500);
+    const amount = round2(parseFloat(String(form.querySelector("input").value).replace(",", ".")) || 0);
+    if (text.length < 5) { toast("Beschreib das Problem bitte in ein paar Worten."); return; }
+    if (amount < 0 || amount > r.receiptTotal + earned(r)) { toast(`Der Betrag darf höchstens ${euro(r.receiptTotal + earned(r))} sein.`); return; }
+    S.disputeFor = null;
+    return withBusy(id, async () => { await updateDoc(reqRef(id), { dispute: { text, amount, status: "offen", at: serverTimestamp() } }); info("Danke. Wir prüfen das und melden uns."); });
+  }
+  if (form.classList.contains("resolve")) {
+    const id = form.dataset.id;
+    const refund = round2(parseFloat(String(form.querySelector("input").value).replace(",", ".")) || 0);
+    return withBusy(id, async () => { const res = await call("resolveDispute", { requestId: id, refund }); info(`Erstattet: ${euro(res.refund)}.`); });
+  }
   if (form.classList.contains("rate")) {
     const id = form.dataset.id; const r = S.requests.find(x => x.id === id); const stars = S.rateFor[id] || 0;
     if (!r || !stars) return;
@@ -1038,7 +1172,8 @@ document.addEventListener("submit", async (ev) => {
       area: `${address.zip} ${address.city}`.slice(0, 60), due: $("#r-due").value || null,
       window: $("#r-window").value, budget: b,
       payment: "online", note,
-      shops, serviceFee: SERVICE_FEE,
+      shops, tip: readTip(), substitutes: (document.querySelector("#reqForm input[name=subst]:checked") || {}).value || "rueckfrage",
+      serviceFee: serviceFor(b, fee.total, readTip()),
       fee: fee.total, feeParts: { base: fee.base, shops: fee.shops, items: fee.items, heavy: fee.heavy, express: fee.express, extra: fee.extra },
       status: "zahlung_offen", createdBy: S.myId, helperId: null, thanks: false,
       createdAt: serverTimestamp(),
@@ -1145,7 +1280,7 @@ async function deleteAccount() {
 }
 
 // ---------- Daten-Abos ----------
-function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); S.isAdmin = false; S.reports = []; S.payoutReady = null; S.ratings = []; S.savedAddress = null; S.addresses = {}; loadingAddr.clear(); }
+function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); S.isAdmin = false; S.reports = []; S.payoutReady = null; S.ratings = []; S.savedAddress = null; S.addresses = {}; loadingAddr.clear(); S.notes = []; S.notesLoaded = false; S.notesOpen = false; }
 
 function startData() {
   stopData();
@@ -1164,6 +1299,14 @@ function startData() {
     S.loaded = true;
     render(); loadNames();
   }, (e) => { console.error(e); if (String(e.code).includes("permission")) return; S.error = "Die Aufträge konnten nicht geladen werden. Lade die Seite neu."; S.loaded = true; render(); }));
+
+  // Postfach: Benachrichtigungen vom Server
+  unsubs.push(onSnapshot(query(collection(db, "notifications"), where("to", "==", S.myId), orderBy("at", "desc"), limit(30)), (snap) => {
+    const fresh = snap.docChanges().filter(c => c.type === "added" && !c.doc.data().read).map(c => c.doc.data());
+    S.notes = snap.docs.map(d => Object.assign({ id: d.id }, d.data({ serverTimestamps: "estimate" })));
+    if (S.notesLoaded && fresh.length) info(`${fresh[0].title}: ${fresh[0].body}`);
+    S.notesLoaded = true; renderHeader();
+  }, (e) => console.error(e)));
 
   // Bewertungen (öffentlich) und eigene gemerkte Adresse
   unsubs.push(onSnapshot(query(collection(db, "ratings"), limit(2000)), (snap) => {

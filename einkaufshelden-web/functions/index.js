@@ -2,25 +2,28 @@
 //
 // Ablauf:
 //  1. Kunde bestellt (status "zahlung_offen") und autorisiert per Stripe Checkout den Höchstbetrag:
-//     Einkaufsbudget + Heldenlohn + 0,20 € Servicegebühr. Es wird nur reserviert.
+//     Einkaufsbudget + Heldenlohn + Trinkgeld + Servicegebühr (0,45 € + 2 %). Es wird nur reserviert.
 //  2. Webhook bestätigt die Reservierung → status "offen", Auftrag erscheint bei den Helden.
 //  3. Held kauft ein, trägt den Kassenbon-Betrag ein und meldet „Geliefert“ → genau
-//     Kassenbon + Heldenlohn + 0,20 € werden abgebucht, der Rest der Reservierung verfällt.
-//  4. Kunde klickt „Erhalten“ (oder 72 h vergehen) → Kassenbon + Heldenlohn gehen an den Helden.
-//     Die 0,20 € bleiben auf dem Stripe-Konto des Betreibers.
+//     Kassenbon + Heldenlohn + Trinkgeld + Servicegebühr werden abgebucht, der Rest verfällt.
+//  4. Kunde klickt „Erhalten“ (oder 72 h vergehen) → Kassenbon + Heldenlohn + Trinkgeld gehen an den Helden.
+//     Die Servicegebühr bleibt auf dem Stripe-Konto des Betreibers.
+//     Meldet der Kunde ein Problem, wartet die Auszahlung, bis der Betreiber entschieden hat.
+//  Bei jedem Schritt bekommen die Beteiligten eine Benachrichtigung (in der App und als Push).
 //  5. Zieht der Kunde zurück, bevor jemand übernommen hat → Reservierung wird aufgehoben.
 //
 // Im Firebase-Emulator (npm start) wird Stripe nur simuliert, es fließt kein Geld.
 
 import { onCall, onRequest, HttpsError } from "firebase-functions/v2/https";
-import { onDocumentUpdated, onDocumentDeleted } from "firebase-functions/v2/firestore";
+import { onDocumentUpdated, onDocumentDeleted, onDocumentCreated } from "firebase-functions/v2/firestore";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineSecret, defineString } from "firebase-functions/params";
 import { setGlobalOptions, logger } from "firebase-functions/v2";
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getMessaging } from "firebase-admin/messaging";
 import Stripe from "stripe";
-import { checkoutAmounts, captureAmounts, readyForCapture, readyForRelease, authExpired, cancelDecision, safeOrigin } from "./lib.js";
+import { checkoutAmounts, captureAmounts, readyForCapture, readyForRelease, authExpired, cancelDecision, disputeDecision, safeOrigin, orderNumber, heroMatchesZip } from "./lib.js";
 
 setGlobalOptions({ region: "europe-west3", maxInstances: 10 });
 initializeApp();
@@ -47,6 +50,40 @@ const originOf = (req) => {
   if (!o) throw new HttpsError("permission-denied", "Unbekannte Webseite.");
   return o;
 };
+
+// ---------- Benachrichtigungen ----------
+// Jede Benachrichtigung landet im Postfach in der App (notifications) und, wenn erlaubt, als Push aufs Handy.
+async function notify(uids, title, body, link = "#meine") {
+  const to = [...new Set(uids.filter(Boolean))];
+  if (!to.length) return;
+  const batch = db.batch();
+  to.forEach(uid => batch.set(db.collection("notifications").doc(), { to: uid, title, body, link, read: false, at: FieldValue.serverTimestamp() }));
+  await batch.commit();
+  if (SIMULATE) { logger.info("Benachrichtigung", to, title, body); return; }
+  const docs = await Promise.all(to.map(uid => db.doc(`pushTokens/${uid}`).get()));
+  for (const d of docs) {
+    const tokens = (d.exists && d.data().tokens) || [];
+    if (!tokens.length) continue;
+    try {
+      const res = await getMessaging().sendEachForMulticast({
+        tokens, notification: { title, body },
+        webpush: { fcmOptions: { link: `/${link}` }, notification: { icon: "/icons/icon-192.png", badge: "/icons/icon-192.png", lang: "de" } },
+        data: { link },
+      });
+      const dead = tokens.filter((t, i) => !res.responses[i].success && /registration-token-not-registered|invalid-argument/.test(String(res.responses[i].error && res.responses[i].error.code)));
+      if (dead.length) await d.ref.update({ tokens: FieldValue.arrayRemove(...dead) });
+    } catch (e) { logger.warn("Push fehlgeschlagen", d.id, e.message); }
+  }
+}
+const firstZip = (area) => (String(area || "").match(/[0-9]{5}/) || [""])[0];
+async function heroesNear(zip, exclude) {
+  const [helpers, ready] = await Promise.all([db.collection("helpers").where("active", "==", true).get(), db.collection("payoutStatus").where("ready", "==", true).get()]);
+  const ok = new Set(ready.docs.map(d => d.id));
+  return helpers.docs.filter(d => d.id !== exclude && ok.has(d.id) && heroMatchesZip(d.data().area, zip)).map(d => d.id);
+}
+const admins = async () => (await db.collection("admins").get()).docs.map(d => d.id);
+const userName = async (uid) => { const d = await db.doc(`users/${uid}`).get(); return (d.exists && d.data().name) || "Dein Held"; };
+const euroText = (c) => (c / 100).toFixed(2).replace(".", ",") + " €";
 
 async function markAuthorized(requestId, info) {
   const ref = db.doc(`requests/${requestId}`);
@@ -100,16 +137,18 @@ async function releasePayment(requestId) {
     const acct = (await db.doc(`stripeAccounts/${r.helperId}`).get()).data();
     if (!acct || !acct.accountId) throw new Error("Der Held hat noch kein Auszahlungskonto.");
     const a = captureAmounts(r);
+    if (a.transfer <= 0) { await ref.update({ transferId: "keine", transferredAmount: 0, transferredAt: FieldValue.serverTimestamp(), transferring: false }); return; }
     const transfer = SIMULATE
       ? { id: `tr_sim_${requestId}` }
       : await stripe().transfers.create({
           amount: a.transfer, currency: "eur", destination: acct.accountId,
           source_transaction: r.chargeId, transfer_group: requestId,
-          description: `Einkauf ${(a.einkauf / 100).toFixed(2)} € + Heldenlohn ${(a.heldenlohn / 100).toFixed(2)} €`,
+          description: `${orderNumber(requestId)}: Einkauf ${euroText(a.einkauf)} + Heldenlohn ${euroText(a.heldenlohn)}${a.tip ? " + Trinkgeld " + euroText(a.tip) : ""}${a.refund ? " − Erstattung " + euroText(a.refund) : ""}`,
           metadata: { requestId },
         }, { idempotencyKey: `transfer-${requestId}` });
     await ref.update({ transferId: transfer.id, transferredAmount: a.transfer / 100, transferredAt: FieldValue.serverTimestamp(), transferring: false, transferError: FieldValue.delete() });
     logger.info("An Helden ausgezahlt", requestId, transfer.id);
+    await notify([r.helperId], "Geld ist unterwegs", `${euroText(a.transfer)} für ${orderNumber(requestId)} werden auf dein Bankkonto überwiesen.`, "#meine");
   } catch (e) {
     logger.error("Auszahlung fehlgeschlagen", requestId, e);
     await ref.update({ transferring: false, transferError: String(e.message || e).slice(0, 200) });
@@ -140,11 +179,16 @@ export const createCheckout = onCall({ secrets }, async (req) => {
     line_items: [
       item("Einkauf (Höchstbetrag)", a.budget, "Reserviert. Abgebucht wird nur der Betrag auf dem Kassenbon."),
       item(`Heldenlohn: ${String(r.title).slice(0, 60)}`, a.heldenlohn, "Geht nach der Lieferung an deinen Einkaufshelden."),
-      item("Servicegebühr Einkaufshelden", a.service),
+      ...(a.tip ? [item("Trinkgeld für deinen Helden", a.tip, "Geht zu 100 % an deinen Helden.")] : []),
+      item("Servicegebühr Einkaufshelden (höchstens)", a.service, "0,45 € + 2 %. Abgerechnet wird mit dem echten Kassenbon-Betrag."),
     ],
     client_reference_id: requestId,
-    metadata: { requestId, uid },
-    payment_intent_data: { capture_method: "manual", transfer_group: requestId, metadata: { requestId } },
+    metadata: { requestId, uid, bestellnummer: orderNumber(requestId) },
+    payment_intent_data: {
+      capture_method: "manual", transfer_group: requestId,
+      description: `Einkaufshelden Bestellung ${orderNumber(requestId)}`,
+      metadata: { requestId, bestellnummer: orderNumber(requestId) },
+    },
     success_url: `${base}/?bezahlt=1#meine`,
     cancel_url: `${base}/?bezahlt=0#meine`,
     expires_at: Math.floor(Date.now() / 1000) + 60 * 60,
@@ -200,10 +244,57 @@ export const onRequestUpdated = onDocumentUpdated({ document: "requests/{id}", s
   const after = event.data.after.data();
   if (!after) return;
   const id = event.params.id;
-  // Held hat „Geliefert“ gemeldet → Kassenbon + Heldenlohn + Gebühr abbuchen
-  if (after.status === "erledigt" && before.status !== "erledigt") await capturePayment(id);
+  const nr = orderNumber(id);
+  // Bezahlt → Helden in der Nähe informieren
+  if (after.status === "offen" && before.status === "zahlung_offen") {
+    const near = await heroesNear(firstZip(after.area), after.createdBy);
+    await notify(near, "Neuer Einkauf in deiner Nähe", `${after.title} · ${after.area} · ${euroText(Math.round(after.fee * 100))} Heldenlohn${after.tip ? " + " + euroText(Math.round(after.tip * 100)) + " Trinkgeld" : ""}`, "#auftraege");
+  }
+  if (after.status === "uebernommen" && before.status === "offen") await notify([after.createdBy], "Held gefunden", `${await userName(after.helperId)} kauft für dich ein (${nr}).`);
+  if (after.status === "offen" && before.status === "uebernommen") await notify([after.createdBy], "Wir suchen einen neuen Helden", `Dein Held konnte ${nr} leider nicht erledigen. Dein Auftrag ist wieder für alle Helden sichtbar.`);
+  if (after.onTheWay && !before.onTheWay) await notify([after.createdBy], "Dein Einkauf ist unterwegs", `${await userName(after.helperId)} ist auf dem Weg zu dir.`);
+  if (after.status === "abgelaufen" && before.status !== "abgelaufen") await notify([after.createdBy], "Bestellung abgelaufen", `Für ${nr} hat sich leider niemand gefunden. Es wurde nichts abgebucht.`);
+  if (after.dispute && !before.dispute) {
+    await notify(await admins(), "Neue Reklamation", `${nr}: ${String(after.dispute.text).slice(0, 80)}`, "#betreiber");
+    await notify([after.helperId], "Kunde meldet ein Problem", `Bei ${nr} gibt es eine Rückfrage. Die Auszahlung wartet, bis sie geklärt ist.`);
+  }
+  // Held hat „Geliefert“ gemeldet → abbuchen
+  if (after.status === "erledigt" && before.status !== "erledigt") {
+    await notify([after.createdBy], "Geliefert!", `Bitte bestätige den Erhalt von ${nr} und bewerte deinen Helden.`);
+    await capturePayment(id);
+  }
   // Abbuchung fertig und Kunde hat schon bestätigt, oder Kunde bestätigt jetzt → an Helden auszahlen
   if ((after.captured && !before.captured) || (after.thanks && !before.thanks)) await releasePayment(id);
+});
+
+// Neue Chat-Nachricht → die andere Person benachrichtigen
+export const onChatMessage = onDocumentCreated("requests/{id}/messages/{msg}", async (event) => {
+  const m = event.data.data();
+  const r = (await db.doc(`requests/${event.params.id}`).get()).data();
+  if (!r) return;
+  const other = m.from === r.createdBy ? r.helperId : r.createdBy;
+  await notify([other], `Nachricht von ${await userName(m.from)}`, String(m.text).slice(0, 120));
+});
+
+// ---------- Reklamationen ----------
+// Nur der Betreiber entscheidet: Teil- oder Vollerstattung, oder ablehnen. Danach wird ausgezahlt.
+export const resolveDispute = onCall({ secrets }, async (req) => {
+  const uid = requireUser(req);
+  if (!(await isAdmin(uid))) throw new HttpsError("permission-denied", "Nur für den Betreiber.");
+  const requestId = String((req.data && req.data.requestId) || "");
+  const refundEuro = Number((req.data && req.data.refund) || 0);
+  const ref = db.doc(`requests/${requestId}`);
+  const r = (await ref.get()).data();
+  const d = disputeDecision(r, refundEuro);
+  if (!d.ok) throw new HttpsError("failed-precondition", d.reason);
+  if (d.refund > 0 && !SIMULATE) {
+    await stripe().refunds.create({ payment_intent: r.paymentIntent, amount: d.refund, metadata: { requestId, grund: "Reklamation" } }, { idempotencyKey: `dispute-${requestId}` });
+  }
+  await ref.update({ "dispute.status": d.refund > 0 ? "erstattet" : "abgelehnt", "dispute.refund": d.refund / 100, "dispute.resolvedAt": FieldValue.serverTimestamp() });
+  const nr = orderNumber(requestId);
+  await notify([r.createdBy], "Reklamation geklärt", d.refund > 0 ? `Du bekommst ${euroText(d.refund)} für ${nr} zurück.` : `Wir haben deine Reklamation zu ${nr} geprüft und keine Erstattung veranlasst.`);
+  await releasePayment(requestId);
+  return { refund: d.refund / 100 };
 });
 
 // Stündlich: Auszahlung nach 72 h, Wiederholung nach Fehlern, abgelaufene Reservierungen aufräumen.

@@ -1,7 +1,7 @@
 # Einkaufshelden – öffentliche Web-App
 
 Nachbarn gehen für Nachbarn einkaufen und bekommen dafür einen fairen Heldenlohn (ab 3 €).
-Bezahlt wird wie bei einem Lieferdienst komplett in der App: Einkauf + Heldenlohn + 0,20 € Servicegebühr für dich.
+Bezahlt wird wie bei einem Lieferdienst komplett in der App: Einkauf + Heldenlohn + Trinkgeld + Servicegebühr (0,45 € + 2 %) für dich.
 Die App läuft im Browser und lässt sich auf dem Handy wie eine normale App installieren.
 Sie nutzt **Firebase** von Google (Anmeldung, Datenbank, Hosting, Server-Funktionen) und **Stripe** für die Bezahlung.
 
@@ -12,6 +12,12 @@ Sie nutzt **Firebase** von Google (Anmeldung, Datenbank, Hosting, Server-Funktio
   zusammentippen (mit Mengen), eigene Artikel ergänzen, zur Kasse
 - **Lieferadresse beim Bestellen:** privat, nur der übernehmende Held sieht sie; auf Wunsch gemerkt
 - Freie Einkaufsliste mit Höchstbetrag und mehreren Läden, Heldenlohn wird automatisch berechnet
+- **Lieferzeit-Fenster** (so schnell wie möglich oder 2-Stunden-Fenster), **Ersatzartikel** ja / nach Rückfrage / nein
+- **Trinkgeld** beim Bestellen, geht zu 100 % an den Helden
+- **Benachrichtigungen** in der App (Glocke) und als Push aufs Handy: neue Aufträge in der Nähe, Held gefunden,
+  unterwegs, geliefert, neue Chat-Nachricht, Geld ausgezahlt
+- **Problem melden:** Kunde reklamiert vor der Bestätigung, Auszahlung wartet, du entscheidest in der Betreiber-Ansicht
+  über eine Teil- oder Vollerstattung
 - **Bewertungen:** 1–5 Sterne nach der Lieferung, Durchschnitt bei jedem Helden
 - **Nochmal bestellen:** frühere Bestellungen mit einem Klick wiederholen
 - **Bezahlen in der App** per Karte, Apple Pay, Google Pay u. a. über Stripe
@@ -30,28 +36,30 @@ Sie nutzt **Firebase** von Google (Anmeldung, Datenbank, Hosting, Server-Funktio
 Die Sicherheitsregeln in `firestore.rules` sorgen dafür, dass niemand fremde Aufträge ändern,
 sich selbst mehr Lohn geben, die Bezahlung überspringen, einen zu hohen Kassenbon eintragen oder fremde Chats
 lesen kann. Lieferadressen sieht nur der übernehmende Held. Zahlungsdaten schreibt nur der Server.
-Das ist mit 23 automatischen Tests abgesichert (`npm test`).
+Das ist mit 29 automatischen Tests abgesichert (`npm test`).
 
 ## So läuft das Geld
 
-Beispiel: Budget 30 €, ein Laden, Kassenbon 24,37 €.
+Beispiel: Budget 25 €, Heldenlohn 3 €, Trinkgeld 2 €, Kassenbon 18,40 €.
 
 | Schritt | Was passiert | Betrag |
 |---|---|---|
-| Bestellen | Auf der Karte des Kunden wird **reserviert** (noch nicht abgebucht) | 30,00 + 3,00 + 0,20 = **33,20 €** |
-| Held liefert | Held trägt den Kassenbon ein, jetzt wird **abgebucht** | 24,37 + 3,00 + 0,20 = **27,57 €** |
-| Kunde bestätigt (oder nach 72 h) | **Auszahlung** an den Helden | 24,37 + 3,00 = **27,37 €** |
-| | Bleibt bei dir | **0,20 €** |
+| Bestellen | Auf der Karte wird **reserviert** (noch nicht abgebucht) | 25 + 3 + 2 + 1,05 Gebühr = **31,05 €** |
+| Held liefert | Er trägt den Kassenbon ein, jetzt wird **abgebucht** | 18,40 + 3 + 2 + 0,92 Gebühr = **24,32 €** |
+| Kunde bestätigt (oder nach 72 h) | **Auszahlung** an den Helden | 18,40 + 3 + 2 = **23,40 €** |
+| | Servicegebühr für dich | **0,92 €** |
+| | davon an Stripe (ca. 1,5 % + 0,25 €) | ca. 0,61 € |
+| | **Bleibt dir** | **ca. 0,31 €** |
 
-- Stripe nimmt pro Zahlung eine eigene Gebühr (in der EU etwa 1,5 % + 0,25 €, im Beispiel ca. 0,66 €).
-  **Die trägst du** – von deinen 0,20 € geht sie ab, du legst pro Einkauf also etwas drauf.
-  Wenn du das ändern willst, erhöhe `SERVICE_FEE` (siehe unten).
+- Die **Servicegebühr ist 0,45 € + 2 %** von Einkauf, Heldenlohn und Trinkgeld, so ähnlich wie bei Lieferando.
+  Sie deckt die Stripe-Gebühr immer ab: Dir bleiben bei jeder Bestellung **mindestens etwa 0,23 €**, bei größeren
+  Einkäufen mehr (bei 100 € Einkauf etwa 0,70 €). Ein automatischer Test prüft das für alle möglichen Beträge.
+  Ausnahme: Karten von außerhalb der EU kosten bei Stripe mehr (bis 3,25 %).
 - Zieht der Kunde zurück, bevor ein Held übernimmt, wird die Reservierung aufgehoben: kein Geld fließt,
   keine Stripe-Gebühr. Übernimmt 6 Tage lang niemand, verfällt der Auftrag genauso.
-- Der Held legt den Einkauf aus und bekommt ihn mit der Auszahlung zurück. Stripe überweist auf sein
-  Bankkonto meist innerhalb von 2–7 Werktagen.
-- Beim Bestellen wählt man **einen oder mehrere Läden** (bis zu 6). Jeder weitere Laden bringt dem Helden
-  **+ 1 €** mehr Heldenlohn.
+- **Reklamation:** Meldet der Kunde ein Problem, wartet die Auszahlung. Du entscheidest in der Betreiber-Ansicht:
+  Teil- oder Vollerstattung (geht vom Anteil des Helden ab) oder ablehnen. Danach wird automatisch ausgezahlt.
+- Beim Bestellen wählt man **einen oder mehrere Läden** (bis zu 6). Jeder weitere Laden bringt dem Helden **+ 1 €**.
 
 > **Wichtig:** Regelmäßige Gebühreneinnahmen über Stripe gelten in Deutschland als Gewerbe. Frag vor dem Start
 > beim Gewerbeamt oder Finanzamt deiner Stadt nach. Stripe fragt bei der Einrichtung nach deinen Daten und
@@ -78,12 +86,12 @@ Der Tarif steht ganz oben in `public/app.js`:
 
 ```js
 export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2, extraShop: 1 };
-export const SERVICE_FEE = 0.2;
+export const SERVICE = { base: 0.45, rate: 0.02 };
 ```
 
 Wenn du den Grundlohn änderst, pass auch `MIN_FEE()` in `firestore.rules` und `MIN_FEE_CENTS` in `functions/lib.js` an.
-Wenn du die Servicegebühr änderst, pass auch `SERVICE_FEE()` in `firestore.rules`, `SERVICE_FEE_CENTS` in
-`functions/lib.js` und den Betrag in `public/agb.html` an.
+Wenn du die Servicegebühr änderst, pass auch `SERVICE_BASE_CENTS` und `SERVICE_RATE` in `functions/lib.js`
+und den Text in `public/agb.html` an. `npm test` prüft danach, ob dir nach der Stripe-Gebühr noch etwas bleibt.
 
 ---
 
@@ -150,7 +158,7 @@ Stell unter **Nutzung und Abrechnung → Budgets** ein Budget von z. B. 5 € mi
    ```
 
    und den Schlüssel einfügen. **Nie in eine Datei schreiben oder auf GitHub hochladen.**
-5. Jetzt veröffentlichen (Schritt 8). Danach in Stripe **Entwickler → Webhooks → Endpunkt hinzufügen**:
+5. Jetzt veröffentlichen (Schritt 9). Danach in Stripe **Entwickler → Webhooks → Endpunkt hinzufügen**:
    - URL: `https://europe-west3-DEINE-PROJEKT-ID.cloudfunctions.net/stripeWebhook`
    - Ereignis: `checkout.session.completed`
    - Den **Signaturschlüssel** (`whsec_…`) kopieren und eintragen:
@@ -166,7 +174,16 @@ Stell unter **Nutzung und Abrechnung → Budgets** ein Budget von z. B. 5 € mi
 7. **Live schalten:** Wenn alles klappt, im Stripe-Dashboard dein Konto aktivieren (Bankkonto, Ausweis),
    in den Live-Modus wechseln und Schritt 3–5 mit dem Live-Schlüssel (`sk_live_…`) wiederholen.
 
-### 8. Veröffentlichen
+### 8. Push-Benachrichtigungen einrichten
+
+1. Firebase-Konsole → Zahnrad → **Projekteinstellungen → Cloud Messaging** → unten bei **Web-Push-Zertifikate**
+   auf **Schlüsselpaar generieren** klicken.
+2. Den Schlüssel in `public/firebase-config.js` bei `vapidKey` eintragen.
+
+Ohne diesen Schritt funktionieren die Benachrichtigungen trotzdem in der App (Glocke oben), nur nicht aufs Handy.
+Auf dem iPhone kommen Push-Nachrichten nur an, wenn die App zum Home-Bildschirm hinzugefügt wurde (iOS 16.4 oder neuer).
+
+### 9. Veröffentlichen
 
 ```bash
 npm test          # prüft Zahlungslogik und Sicherheitsregeln (optional, braucht Java)
@@ -175,7 +192,7 @@ npx firebase deploy
 
 Am Ende steht dort deine Adresse, z. B. `https://einkaufshelden-1a2b3.web.app`. **Die App ist jetzt online.**
 
-### 9. Eigene Domain (optional)
+### 10. Eigene Domain (optional)
 
 1. Domain kaufen, z. B. `einkaufshelden.de`, bei IONOS, Strato o. Ä. (ca. 5–15 € im Jahr).
 2. Firebase-Konsole → **Hosting → Benutzerdefinierte Domain hinzufügen** und den Anweisungen folgen
@@ -185,7 +202,7 @@ Am Ende steht dort deine Adresse, z. B. `https://einkaufshelden-1a2b3.web.app`. 
 4. Trag die Domain in `functions/.env` bei `APP_DOMAINS=` ein (z. B. `einkaufshelden.de`) und veröffentliche
    erneut. Sonst lässt Stripe nach dem Bezahlen nicht auf deine Domain zurückleiten.
 
-### 10. Rechtstexte ausfüllen – vor dem Start!
+### 11. Rechtstexte ausfüllen – vor dem Start!
 
 In `public/impressum.html`, `public/datenschutz.html` und `public/agb.html` sind alle Stellen
 **gelb markiert**, die du ausfüllen musst (Name, Anschrift, E-Mail, Datum).
