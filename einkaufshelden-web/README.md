@@ -44,9 +44,9 @@ kann nur der Betreiber eintragen. Das ist mit 12 automatischen Tests abgesichert
 In `public/site-config.js` trägst du deinen Namen und deine PayPal-Adresse und/oder IBAN ein.
 Diese Angaben sehen die Helden, damit sie dir die Gebühren überweisen können.
 
-> **Wichtig:** Sobald du Gebühren einnimmst, betreibst du ein Gewerbe. Melde es beim Gewerbeamt deiner
-> Stadt an (ca. 20–60 €) und gib die Einnahmen in der Steuererklärung an. Als Kleinunternehmer
-> (unter 25.000 € Umsatz im Vorjahr) brauchst du keine Umsatzsteuer auszuweisen.
+> **Wichtig:** Eine feste Gebühr pro Einkauf gilt in Deutschland meist als Gewerbe, auch bei kleinen Beträgen.
+> Frag vor dem Start kurz beim Gewerbeamt oder Finanzamt deiner Stadt nach, ob du anmelden musst.
+> Die Einnahmen gehören in jedem Fall in deine Steuererklärung.
 
 ### Später: automatische Bezahlung
 
