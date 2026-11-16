@@ -17,7 +17,7 @@ const request = (over = {}) => ({
   shops: ["Aldi", "dm"], serviceFee: 0.2,
   status: "offen", createdBy: ANNA, helperId: null, thanks: false, createdAt: serverTimestamp(), ...over,
 });
-const profile = (name) => ({ name, acceptedTerms: true, createdAt: serverTimestamp() });
+const profile = (name) => ({ name, acceptedTerms: true, ageConfirmed: true, createdAt: serverTimestamp() });
 const hero = () => ({ area: "Ehrenfeld", transport: "Fahrrad", days: ["Sa"], note: "", active: true, adult: true, joinedAt: serverTimestamp() });
 
 before(async () => {
@@ -41,11 +41,15 @@ test("Nicht angemeldete Besucher sehen nichts", async () => {
   await assertFails(getDoc(doc(anon(), "users", ANNA)));
 });
 
-test("Profile: nur das eigene schreiben, Name 2–40 Zeichen, AGB nötig", async () => {
+test("Profile: nur das eigene schreiben, Name 2–40 Zeichen, AGB und Mindestalter 10 nötig", async () => {
   await assertFails(setDoc(doc(db(CARO), "users", ANNA), profile("Hacker")));
   await assertFails(setDoc(doc(db(CARO), "users", CARO), profile("X")));
   await assertFails(setDoc(doc(db(CARO), "users", CARO), { name: "Caro", acceptedTerms: false }));
   await assertFails(setDoc(doc(db(CARO), "users", CARO), { ...profile("Caro"), admin: true }));
+  // Mindestalter 10 muss bestätigt sein
+  await assertFails(setDoc(doc(db(CARO), "users", CARO), { ...profile("Caro"), ageConfirmed: false }));
+  const { ageConfirmed, ...ohneAlter } = profile("Caro");
+  await assertFails(setDoc(doc(db(CARO), "users", CARO), ohneAlter));
 });
 
 test("Heldenprofil: nur ab 18 und nur das eigene", async () => {

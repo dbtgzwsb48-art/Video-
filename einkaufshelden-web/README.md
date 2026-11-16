@@ -8,6 +8,7 @@ Sie nutzt **Firebase** von Google für Anmeldung, Datenbank und Hosting. Für de
 
 - Anmeldung mit Google oder mit E-Mail und Passwort (inkl. Passwort vergessen und E-Mail-Bestätigung)
 - Einkauf anfragen mit automatisch berechnetem Heldenlohn
+- Mitglied werden ab 10 Jahren (unter 18 mit Einverständnis der Eltern)
 - Als Held anmelden (nur ab 18), Aufträge übernehmen, Artikel abhaken, „Geliefert“ melden, Auftrag abgeben
 - **Privater Übergabe-Chat:** Nur Auftraggeber und Held sehen ihn, dort wird die Adresse ausgetauscht.
 - Danke sagen mit optionalem Trinkgeld, Verdienstübersicht für Helden, Heldenwand

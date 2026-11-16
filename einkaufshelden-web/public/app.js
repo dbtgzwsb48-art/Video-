@@ -299,6 +299,7 @@ function vOnboarding() {
     <form class="card" id="onbForm" style="margin-block:16px 56px">
       <label class="f">Wie sollen andere dich nennen? <small>Vorname oder Spitzname, für alle Mitglieder sichtbar</small>
         <input id="o-name" required minlength="2" maxlength="40" value="${esc((S.fbUser && S.fbUser.displayName || "").split(" ")[0])}" autocomplete="given-name"></label>
+      <label class="consent"><input type="checkbox" id="o-age" required> <span>Ich bin mindestens 10 Jahre alt. Wenn ich jünger als 18 bin, sind meine Eltern damit einverstanden, dass ich Einkaufshelden nutze.</span></label>
       <label class="consent"><input type="checkbox" id="o-terms" required> <span>Ich habe die <a href="agb.html" target="_blank">Nutzungsbedingungen</a> und die <a href="datenschutz.html" target="_blank">Datenschutzerklärung</a> gelesen und bin einverstanden.</span></label>
       <div class="form-foot"><button class="btn primary" type="submit">Los geht's</button><span class="msg" id="o-msg" role="status"></span></div>
     </form>`;
@@ -740,8 +741,8 @@ document.addEventListener("submit", async (ev) => {
     btn.disabled = true;
     try {
       const data = form.id === "onbForm"
-        ? { name, acceptedTerms: true, createdAt: serverTimestamp() }
-        : { name, acceptedTerms: true, createdAt: S.profile.createdAt || serverTimestamp() };
+        ? { name, acceptedTerms: true, ageConfirmed: true, createdAt: serverTimestamp() }
+        : { name, acceptedTerms: true, ageConfirmed: true, createdAt: S.profile.createdAt || serverTimestamp() };
       await setDoc(doc(db, "users", S.myId), data);
       S.names[S.myId] = name;
       if (form.id === "nameForm") { S.renderedView = null; S.flash = { sel: "#k-msg", text: "Gespeichert." }; }

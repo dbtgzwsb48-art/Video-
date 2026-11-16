@@ -27,9 +27,10 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if signedIn();
       allow create, update: if isMe(userId)
-        && newData().keys().hasOnly(['name', 'acceptedTerms', 'createdAt'])
+        && newData().keys().hasOnly(['name', 'acceptedTerms', 'ageConfirmed', 'createdAt'])
         && text(newData().name, 2, 40)
-        && newData().acceptedTerms == true;
+        && newData().acceptedTerms == true
+        && newData().ageConfirmed == true;   // mindestens 10 Jahre, unter 18 mit Einverständnis der Eltern
       allow delete: if isMe(userId);
     }
 
