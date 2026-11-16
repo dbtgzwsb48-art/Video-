@@ -4,6 +4,7 @@
 #   ./deploy.sh            alles veröffentlichen (fragt beim ersten Mal nach dem Stripe-Schlüssel)
 #   ./deploy.sh --stripe   Stripe-Schlüssel neu eingeben (z. B. beim Wechsel von Test auf Live)
 #   ./deploy.sh --webhook  Stripe-Webhook-Signaturschlüssel (whsec_…) eingeben
+#   ./deploy.sh --vorschau nur Webseite und Datenbank-Regeln (geht auch ohne Blaze-Tarif, Bestellen gesperrt)
 set -euo pipefail
 cd "$(dirname "$0")"
 PROJECT=einkaufshelden
@@ -19,6 +20,15 @@ if ! $FB projects:list >/dev/null 2>&1; then
   $FB login --no-localhost
 fi
 $FB use "$PROJECT" >/dev/null
+
+if [[ "${1:-}" == "--vorschau" ]]; then
+  echo "== Vorschau hochladen (Webseite und Datenbank-Regeln)"
+  $FB deploy --project "$PROJECT" --only hosting,firestore --force
+  echo
+  echo "Fertig! Vorschau online:  https://$PROJECT.web.app"
+  echo "Bestellen ist gesperrt, bis Blaze aktiv ist und ./deploy.sh ohne --vorschau gelaufen ist."
+  exit 0
+fi
 
 secret_exists() { gcloud secrets describe "$1" --project "$PROJECT" >/dev/null 2>&1; }
 set_secret_from_text() {   # Name, Wert

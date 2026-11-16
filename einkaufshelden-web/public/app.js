@@ -12,6 +12,9 @@ import {
 import { getFunctions, connectFunctionsEmulator, httpsCallable } from "./vendor/firebase-functions.js";
 import * as cfg from "./firebase-config.js";
 const firebaseConfig = cfg.firebaseConfig;
+// Vorschau-Modus: solange die Server-Funktionen (Bezahlung) nicht hochgeladen sind, ist Bestellen gesperrt.
+// In firebase-config.js auf `export const paymentsLive = true;` stellen, sobald ./deploy.sh komplett gelaufen ist.
+const PREVIEW = cfg.paymentsLive === false;
 
 // ---------- Tarif ----------
 // Heldenlohn: Grundlohn + Artikelzuschlag ab dem 11. Artikel + Zuschläge. Muss zu firestore.rules passen (MIN_FEE).
@@ -219,6 +222,7 @@ function renderHeader() {
 function renderBanner() {
   let html = "";
   if (!configured) html = `<div class="notice err">Firebase ist noch nicht eingerichtet. Trage deine Projektdaten in <code>firebase-config.js</code> ein (siehe README).</div>`;
+  else if (PREVIEW && !LOCAL) html = `<div class="notice">Vorschau: Einkaufshelden startet bald. Du kannst dich schon anmelden, Läden ansehen und dich als Held eintragen. Bestellen und Bezahlen ist in Kürze möglich.</div>`;
   else if (S.error) html = `<div class="notice err">${esc(S.error)}</div>`;
   else if (S.fbUser && S.fbUser.providerData.some(p => p.providerId === "password") && !S.fbUser.emailVerified)
     html = `<div class="notice">Bitte bestätige deine E-Mail-Adresse über den Link, den wir dir geschickt haben. <button class="linkbtn" id="resendVerify" type="button">Link erneut senden</button></div>`;
@@ -672,7 +676,7 @@ function vHilfe() {
       <div class="calc" id="calc" aria-live="polite">${calcHtml()}</div>
       <label class="f">Hinweise <small>Optional, für alle sichtbar. Keine Adresse!</small><textarea id="r-note" maxlength="400" placeholder="Bitte laktosefreie Milch, falls es keine gibt. Ich wohne im 3. OG ohne Aufzug.">${esc(d.note || "")}</textarea></label>
       <div class="form-foot">
-        <button class="btn primary" type="submit">Weiter zur Bezahlung</button>
+        <button class="btn primary" type="submit"${PREVIEW && !LOCAL ? " disabled" : ""}>${PREVIEW && !LOCAL ? "Bestellen bald möglich" : "Weiter zur Bezahlung"}</button>
         <span class="msg" id="r-msg" role="status"></span>
       </div>
     </form></div>${sidebar()}</div>`;
