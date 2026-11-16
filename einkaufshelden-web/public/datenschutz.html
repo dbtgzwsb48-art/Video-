@@ -24,7 +24,8 @@
 <li><b>Aufträge:</b> Einkaufsliste, Stadtteil/PLZ, Wunschtermin, Budget, Bezahlart, Hinweise, Heldenlohn, Trinkgeld, Status und Zeitpunkte.</li>
 <li><b>Nachrichten:</b> Inhalte des privaten Übergabe-Chats zwischen anfragender Person und Held, z. B. Adresse oder Uhrzeit der Übergabe.</li>
 <li><b>Meldungen:</b> wer welchen Auftrag gemeldet hat.</li>
-<li><b>Servicegebühren:</b> für Helden die Summe der eingesammelten Servicegebühren sowie Datum und Betrag der Zahlungseingänge beim Betreiber. Diese Daten bewahren wir wegen steuerlicher Aufbewahrungspflichten bis zu 10 Jahre auf (Art. 6 Abs. 1 lit. c DSGVO).</li>
+<li><b>Zahlungen:</b> Beträge (Budget, Kassenbon, Heldenlohn, Servicegebühr), Zeitpunkte und Kennungen der Zahlungen bei Stripe. Kartendaten sehen wir nicht, die gibst du direkt bei Stripe ein. Zahlungsdaten bewahren wir wegen steuerlicher Pflichten bis zu 10 Jahre auf (Art. 6 Abs. 1 lit. c DSGVO).</li>
+<li><b>Auszahlungskonto der Helden:</b> eine Kennung deines Stripe-Kontos und ob Auszahlungen möglich sind. Bankverbindung und Ausweisdaten gibst du direkt bei Stripe an.</li>
 <li><b>Technische Daten:</b> beim Aufruf der Seite verarbeitet unser Hosting-Anbieter IP-Adresse, Datum, Uhrzeit und Browserinformationen, um die Seite auszuliefern und abzusichern.</li>
 </ul>
 <h2>3. Zwecke und Rechtsgrundlagen</h2>
@@ -33,6 +34,7 @@
 <p>Aufträge, Anzeigenamen und Heldenprofile sehen alle angemeldeten Mitglieder. Nachrichten sehen nur die beiden Beteiligten eines Auftrags. Meldungen sehen nur wir als Betreiber.</p>
 <h2>5. Dienstleister</h2>
 <p>Wir nutzen Firebase (Authentication, Cloud Firestore, Hosting) der Google Ireland Limited, Gordon House, Barrow Street, Dublin 4, Irland, als Auftragsverarbeiter. Die Datenbank liegt in der Region <span class="todo">[z. B. europe-west3 (Frankfurt)]</span>. Eine Übermittlung in die USA an die Google LLC ist nicht ausgeschlossen; sie erfolgt auf Grundlage des EU-US Data Privacy Framework bzw. von Standardvertragsklauseln. Bei Anmeldung mit Google gelten zusätzlich die Datenschutzhinweise von Google.</p>
+<p>Für die Bezahlung nutzen wir Stripe (Stripe Payments Europe, Ltd., 1 Grand Canal Street Lower, Dublin 2, Irland). Stripe verarbeitet deine Zahlungsdaten und bei Helden auch Identitäts- und Bankdaten in eigener Verantwortung, u. a. zur Betrugsvorbeugung und wegen gesetzlicher Pflichten (Geldwäschegesetz). Es gilt die Datenschutzerklärung von Stripe (stripe.com/de/privacy). Beim Bezahlen wirst du auf eine Seite von Stripe weitergeleitet.</p>
 <p>Schriftarten und Programmbibliotheken werden von unserem eigenen Server geladen, nicht von Drittanbietern. Wir verwenden keine Werbe- oder Analyse-Tracker.</p>
 <h2>6. Speicherdauer</h2>
 <p>Wir speichern deine Daten, solange du ein Konto hast. Du kannst dein Konto jederzeit unter „Konto“ in der App löschen. Dabei werden Profil, Heldenprofil, deine Aufträge und dein Login gelöscht. Nachrichten in Chats bleiben für die andere Person sichtbar, bis der zugehörige Auftrag gelöscht ist; auf Wunsch löschen wir sie manuell.</p>

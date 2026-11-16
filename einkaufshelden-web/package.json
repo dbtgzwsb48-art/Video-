@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "firebase emulators:start",
-    "test": "firebase emulators:exec --only firestore \"node --test tests/*.test.js\"",
-    "deploy": "firebase deploy"
+    "start": "firebase emulators:start --project demo-einkaufshelden --only auth,firestore,functions,hosting",
+    "test": "node --test tests/payments.test.js && firebase emulators:exec --project einkaufshelden-test --only firestore \"node --test tests/rules.test.js\"",
+    "deploy": "firebase deploy",
+    "postinstall": "cd functions && npm install"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.0",

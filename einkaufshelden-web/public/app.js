@@ -9,15 +9,14 @@ import {
   initializeFirestore, connectFirestoreEmulator, persistentLocalCache, collection, doc, onSnapshot, query, orderBy, limit,
   addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, where, runTransaction, serverTimestamp,
 } from "./vendor/firebase-firestore.js";
+import { getFunctions, connectFunctionsEmulator, httpsCallable } from "./vendor/firebase-functions.js";
 import { firebaseConfig } from "./firebase-config.js";
-import { SITE } from "./site-config.js";
 
 // ---------- Tarif ----------
 // Heldenlohn: Grundlohn + Artikelzuschlag ab dem 11. Artikel + Zuschläge. Muss zu firestore.rules passen (MIN_FEE).
 export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2, extraShop: 1 };
 // Servicegebühr je Einkauf für den Betreiber. Muss zu SERVICE_FEE() in firestore.rules passen.
 export const SERVICE_FEE = 0.2;
-const TIP_OPTIONS = [2, 5];
 const SHOPS = ["Aldi", "Lidl", "Rewe", "Edeka", "Penny", "Netto", "Kaufland", "Norma", "dm", "Rossmann", "Apotheke", "Getränkemarkt", "Bäckerei", "Wochenmarkt", "Bio-Laden", "Drogerie egal", "Supermarkt egal"];
 const MAX_SHOPS = 6;
 
@@ -25,8 +24,9 @@ const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const VIEWS = ["auftraege", "hilfe", "meine", "held", "helden", "konto", "betreiber"];
 const WINDOWS = { egal: "egal wann", vormittags: "vormittags", mittags: "mittags", nachmittags: "nachmittags", abends: "abends" };
-const PAY = { bar: "Bar bei Übergabe", paypal: "PayPal", ueberweisung: "Überweisung", vorab: "Geld wird vorab übergeben" };
-const STATUS = { offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert" };
+const STATUS = { zahlung_offen: "Nicht bezahlt", offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert", abgelaufen: "Abgelaufen" };
+const BUDGET = { min: 5, max: 300 };   // muss zu firestore.rules und functions/lib.js passen
+const MAX_DAYS_AHEAD = 5;              // Kartenreservierungen halten nur ein paar Tage
 const DAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const euro = (n) => (typeof n === "number" && isFinite(n)) ? n.toLocaleString("de-DE", { style: "currency", currency: "EUR" }) : "–";
 const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
@@ -45,8 +45,9 @@ export function calcFee(count, heavy, due, extra, shopCount = 1) {
   return parts;
 }
 const svc = (r) => typeof r.serviceFee === "number" ? r.serviceFee : 0;
-const todo = (v, label) => (!v || String(v).startsWith("HIER")) ? `<span class="todo">[${label}]</span>` : esc(v);
-const earned = (r) => (typeof r.fee === "number" ? r.fee : 0) + (typeof r.tip === "number" ? r.tip : 0);
+const earned = (r) => (typeof r.fee === "number" ? r.fee : 0);
+const receipt = (r) => (typeof r.receiptTotal === "number" ? r.receiptTotal : 0);
+const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
 const toDate = (t) => t && typeof t.toDate === "function" ? t.toDate() : (t ? new Date(t) : null);
 
 // ---------- Firebase ----------
@@ -55,13 +56,15 @@ const LOCAL = ["localhost", "127.0.0.1"].includes(location.hostname);
 const filledIn = firebaseConfig && firebaseConfig.apiKey && !String(firebaseConfig.apiKey).startsWith("HIER");
 const config = LOCAL && !filledIn ? { apiKey: "demo-key", authDomain: "demo-einkaufshelden.firebaseapp.com", projectId: "demo-einkaufshelden", appId: "demo" } : firebaseConfig;
 const configured = LOCAL || filledIn;
-let auth = null, db = null;
+let auth = null, db = null, fns = null;
 if (configured) {
   const app = initializeApp(config);
   auth = getAuth(app);
   auth.languageCode = "de";
+  fns = getFunctions(app, "europe-west3");
   if (LOCAL) {
     db = initializeFirestore(app, {});
+    connectFunctionsEmulator(fns, location.hostname, 5001);
     connectAuthEmulator(auth, `http://${location.hostname}:9099`, { disableWarnings: true });
     connectFirestoreEmulator(db, location.hostname, 8080);
   } else {
@@ -69,6 +72,9 @@ if (configured) {
     catch (e) { db = initializeFirestore(app, {}); }
   }
 }
+
+// Server-Funktionen (functions/index.js) aufrufen
+const call = (name, data = {}) => httpsCallable(fns, name)(data).then(r => r.data);
 
 // ---------- State ----------
 const S = {
@@ -78,7 +84,7 @@ const S = {
   filter: "", show: "offen", sort: "neu", busy: new Set(), confirm: null, flash: null,
   authMode: "login", renderedView: null, formKey: null,
   chatId: null, chatMsgs: [], unsubChat: null,
-  isAdmin: false, payouts: [], reports: [],
+  isAdmin: false, reports: [], payoutReady: null, deliverFor: null,
 };
 const unsubs = [];
 let lastDraft = null;
@@ -95,7 +101,7 @@ async function loadNames() {
   const ids = new Set();
   S.requests.forEach(r => { if (r.createdBy) ids.add(r.createdBy); if (r.helperId) ids.add(r.helperId); });
   Object.keys(S.helpers).forEach(id => ids.add(id));
-  S.payouts.forEach(p => ids.add(p.helperId)); S.reports.forEach(r => ids.add(r.by));
+  S.reports.forEach(r => ids.add(r.by));
   const missing = [...ids].filter(id => !(id in S.names) && !nameReq.has(id));
   if (!missing.length) return;
   missing.forEach(id => nameReq.add(id));
@@ -157,8 +163,30 @@ function feeHint(r) {
   if (p.heavy) bits.push("schwer");
   if (p.express) bits.push("Express");
   if (p.extra) bits.push("Extra");
-  if (typeof r.tip === "number" && r.tip > 0) bits.push(euro(r.tip) + " Trinkgeld");
   return bits.join(" · ");
+}
+
+// Live-Status für Kunde und Held, wie bei einem Lieferdienst
+function timeline(r) {
+  if (!["offen", "uebernommen", "erledigt"].includes(r.status)) return "";
+  const shopping = r.status !== "offen" && (r.items || []).some(i => i.done);
+  const steps = [
+    ["Bezahlt", true],
+    ["Held gefunden", r.status !== "offen"],
+    ["Kauft ein", shopping || r.onTheWay || r.status === "erledigt"],
+    ["Unterwegs", r.onTheWay || r.status === "erledigt"],
+    ["Geliefert", r.status === "erledigt"],
+  ];
+  const cur = steps.map(x => x[1]).lastIndexOf(true);
+  return `<ol class="track" aria-label="Status">${steps.map(([label, done], i) => `<li class="${done ? "done" : ""}${i === cur ? " cur" : ""}">${label}</li>`).join("")}</ol>`;
+}
+
+function payLine(r) {
+  if (r.status === "zahlung_offen") return `<div><span class="k">Bezahlen</span><span>noch offen</span></div>`;
+  if (r.status === "abgelaufen") return `<div><span class="k">Reservierung</span><span>aufgehoben</span></div>`;
+  if (r.captured) return `<div><span class="k">Abgebucht</span><span>${euro(r.capturedAmount)}</span></div>`;
+  if (r.paymentError) return `<div><span class="k">Zahlung</span><span class="warn">Problem – Betreiber informiert</span></div>`;
+  return `<div><span class="k">Reserviert</span><span>${euro(r.budget + r.fee + svc(r))}</span></div>`;
 }
 
 function card(r) {
@@ -171,24 +199,37 @@ function card(r) {
   const id = esc(r.id);
   let actions = "";
   if (r.status === "offen" && !mineReq) {
-    actions += isHero()
-      ? `<button class="btn primary" data-act="take" data-id="${id}"${busy}>Ich gehe einkaufen</button>`
-      : `<a class="btn" href="#held">Als Held anmelden, um zu helfen</a>`;
+    actions += !isHero() ? `<a class="btn" href="#held">Als Held anmelden, um zu helfen</a>`
+      : S.payoutReady ? `<button class="btn primary" data-act="take" data-id="${id}"${busy}>Ich gehe einkaufen</button>`
+      : `<a class="btn" href="#held">Erst Auszahlungskonto einrichten</a>`;
   }
+  if (mineReq && r.status === "zahlung_offen") actions += `<button class="btn primary" data-act="pay" data-id="${id}"${busy}>Jetzt bezahlen</button>`;
   if ((mineReq || mineJob) && r.helperId) actions += `<button class="btn" data-act="chat" data-id="${id}">Nachrichten</button>`;
-  if (canTick) {
+  if (canTick && S.deliverFor === r.id) {
+    actions += `<form class="receipt" data-id="${id}">
+        <label class="f">Betrag laut Kassenbon in € <small>höchstens ${euro(r.budget)}</small>
+          <input id="rc-${id}" type="number" inputmode="decimal" min="0.01" max="${r.budget}" step="0.01" required placeholder="z. B. 24,37"></label>
+        <div class="actions"><button class="btn primary" type="submit"${busy}>Geliefert melden</button><button class="btn ghost" type="button" data-act="deliver" data-id="${id}">Abbrechen</button></div>
+        <p class="small">Abgebucht werden dieser Betrag + ${euro(r.fee)} Heldenlohn + ${euro(svc(r))} Gebühr. Du bekommst Kassenbon-Betrag + Heldenlohn ausgezahlt. Gib den Kassenbon mit ab.</p>
+      </form>`;
+  } else if (canTick) {
+    if (!r.onTheWay) actions += `<button class="btn" data-act="onway" data-id="${id}"${busy}>Bin unterwegs</button>`;
     actions += `<button class="btn primary" data-act="deliver" data-id="${id}"${busy}>Geliefert</button>`;
-    actions += `<button class="btn" data-act="release" data-id="${id}"${busy}>Abgeben</button>`;
+    actions += `<button class="btn ghost" data-act="release" data-id="${id}"${busy}>Abgeben</button>`;
   }
   if (mineReq && r.status === "erledigt" && !r.thanks) {
-    actions += `<div class="thanks-row">Danke sagen, gern mit Trinkgeld:
-      <button class="btn" data-act="thanks" data-tip="0" data-id="${id}"${busy}>Nur Danke</button>
-      ${TIP_OPTIONS.map(t => `<button class="btn primary" data-act="thanks" data-tip="${t}" data-id="${id}"${busy}>+ ${euro(t)}</button>`).join("")}</div>`;
+    actions += `<button class="btn primary" data-act="thanks" data-id="${id}"${busy}>Erhalten, danke!</button>`;
   }
-  if (mineReq && r.status !== "uebernommen") {
-    actions += `<button class="btn ghost" data-act="cancel" data-id="${id}"${busy}>${S.confirm === r.id ? "Wirklich löschen?" : (r.status === "erledigt" ? "Entfernen" : "Zurückziehen")}</button>`;
+  const deletable = ["zahlung_offen", "abgelaufen"].includes(r.status) || (r.status === "erledigt" && r.transferId);
+  if (mineReq && (r.status === "offen" || deletable)) {
+    const label = r.status === "offen" ? "Zurückziehen" : r.status === "erledigt" ? "Entfernen" : "Verwerfen";
+    actions += `<button class="btn ghost" data-act="cancel" data-id="${id}"${busy}>${S.confirm === r.id ? (r.status === "offen" ? "Wirklich? Reservierung wird aufgehoben" : "Wirklich löschen?") : label}</button>`;
   }
   if (!mineReq && !mineJob) actions += `<button class="btn ghost" data-act="report" data-id="${id}"${busy}>${S.confirm === "rep-" + r.id ? "Wirklich melden?" : "Melden"}</button>`;
+
+  const hint = mineReq && r.status === "zahlung_offen" ? `<p class="note">Bezahl den Auftrag, dann sehen ihn die Helden. Auf deiner Karte wird zunächst nur der Höchstbetrag reserviert.</p>`
+    : mineReq && r.status === "abgelaufen" ? `<p class="note">Leider hat niemand rechtzeitig übernommen. Die Reservierung auf deiner Karte ist aufgehoben, es wurde nichts abgebucht.</p>`
+    : mineJob && r.status === "erledigt" ? `<p class="note">${r.transferId ? `${euro(r.transferredAmount)} an dich ausgezahlt.` : r.transferError ? "Auszahlung verzögert – prüfe dein Auszahlungskonto." : `Wird ausgezahlt, sobald ${esc(nameOf(r.createdBy))} den Erhalt bestätigt, spätestens nach 72 Stunden.`}</p>` : "";
 
   return `<article class="bon">
     <div class="head">
@@ -197,22 +238,23 @@ function card(r) {
     </div>
     <h3>${esc(r.title || "Einkauf")}</h3>
     ${Array.isArray(r.shops) && r.shops.length ? `<div class="shops">${r.shops.map(x => `<span>${esc(x)}</span>`).join("")}</div>` : ""}
+    ${(mineReq || mineJob) ? timeline(r) : ""}
     ${typeof r.fee === "number" ? `<div class="lohn"><div><span class="k">Heldenlohn</span><small>${esc(feeHint(r))}</small></div><b>${euro(earned(r))}</b></div>` : ""}
     <ul class="items">${items.map((it, i) => `<li class="${it.done ? "done" : ""}">${canTick
       ? `<input type="checkbox" id="it-${id}-${i}" data-act="tick" data-id="${id}" data-i="${i}"${it.done ? " checked" : ""}${busy}><label for="it-${id}-${i}"><span>${esc(it.t)}</span></label>`
       : `<span class="dot">${it.done ? "✓" : "·"}</span><span>${esc(it.t)}</span>`}</li>`).join("")}</ul>
     <div class="meta">
       <div><span class="k">Artikel</span><span>${r.status === "offen" ? items.length : `${doneCount}/${items.length}`}</span></div>
-      <div><span class="k">Budget</span><span>${typeof r.budget === "number" ? "max. " + euro(r.budget) : "nach Kassenbon"}</span></div>
-      <div><span class="k">Bezahlung</span><span>${esc(PAY[r.payment] || r.payment || "–")}</span></div>
-      ${svc(r) ? `<div><span class="k">Servicegebühr</span><span>${euro(svc(r))}</span></div>` : ""}
-      ${typeof r.budget === "number" && typeof r.fee === "number" ? `<div><span class="k">Höchstens gesamt</span><span>${euro(r.budget + r.fee + svc(r))}</span></div>` : ""}
+      <div><span class="k">Budget Einkauf</span><span>max. ${euro(r.budget)}</span></div>
+      ${r.receiptTotal ? `<div><span class="k">Kassenbon</span><span>${euro(r.receiptTotal)}</span></div>` : ""}
+      ${(mineReq || S.isAdmin) ? payLine(r) : `<div><span class="k">Bezahlung</span><span>online, gesichert</span></div>`}
     </div>
     ${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}
+    ${hint}
     <div class="people">
       <span>${esc(nameOf(r.createdBy))} · ${esc(ago(r.createdAt))}</span>
       ${r.helperId ? `<span>→ <b>${esc(nameOf(r.helperId))}</b> kauft ein</span>` : ""}
-      ${r.thanks ? `<span class="cape">Danke${typeof r.tip === "number" && r.tip > 0 ? " + " + euro(r.tip) : ""}</span>` : ""}
+      ${r.thanks ? `<span class="cape">Erhalten ✓</span>` : ""}
     </div>
     ${actions ? `<div class="actions">${actions}</div>` : ""}
   </article>`;
@@ -226,7 +268,7 @@ const loadingOrEmpty = (title, text, link) => !S.loaded
 function tarifPanel() {
   return `<section class="panel">
     <h2>Heldenlohn</h2>
-    <p class="small">Jeder Einkauf bringt dem Helden einen festen, fairen Lohn. Er wird bei der Übergabe zusammen mit dem Einkauf bezahlt.</p>
+    <p class="small">Jeder Einkauf bringt dem Helden einen festen, fairen Lohn. Bezahlt wird alles sicher in der App.</p>
     <dl class="tarif">
       <div><dt>Grundlohn je Einkauf</dt><dd>${euro(FEE.base)}</dd></div>
       <div><dt>jeder weitere Laden</dt><dd>+ ${euro(FEE.extraShop)}</dd></div>
@@ -235,7 +277,7 @@ function tarifPanel() {
       <div><dt>Express, noch heute</dt><dd>+ ${euro(FEE.express)}</dd></div>
       <div><dt>Extra und Trinkgeld</dt><dd>freiwillig</dd></div>
     </dl>
-    <p class="small">Dazu kommt eine Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf für den Betrieb von Einkaufshelden. Der Held nimmt sie bei der Übergabe mit und leitet sie weiter.</p>
+    <p class="small">Dazu kommt eine Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf für den Betrieb von Einkaufshelden.</p>
   </section>`;
 }
 
@@ -253,9 +295,9 @@ function sidebar() {
     <section class="panel">
       <h2>So funktioniert's</h2>
       <ol class="steps">
-        <li><b>Liste anlegen.</b> Wer Hilfe braucht, schreibt auf, was gebraucht wird, wo und bis wann. Der Heldenlohn wird automatisch berechnet.</li>
+        <li><b>Bestellen und bezahlen.</b> Einkaufsliste anlegen und in der App bezahlen. Auf der Karte wird erst nur der Höchstbetrag reserviert.</li>
         <li><b>Held übernimmt.</b> Ein Einkaufsheld aus der Gegend sagt zu. Über „Nachrichten“ macht ihr Adresse und Uhrzeit privat aus.</li>
-        <li><b>Übergabe.</b> Ware und Kassenbon gegen den Betrag vom Bon plus Heldenlohn. Danach ein Danke, gern mit Trinkgeld.</li>
+        <li><b>Lieferung.</b> Der Held trägt den Kassenbon-Betrag ein. Abgebucht wird genau dieser Betrag plus Heldenlohn und Gebühr. Du siehst jeden Schritt live.</li>
       </ol>
       <p class="small">Aufträge sehen alle Mitglieder. Schreib deine Adresse oder Telefonnummer deshalb nur in die privaten Nachrichten.</p>
     </section>
@@ -307,7 +349,7 @@ function vOnboarding() {
 
 function vAuftraege() {
   const f = S.filter.trim().toLowerCase();
-  let list = S.requests.filter(r => S.show === "alle" ? true : r.status === S.show);
+  let list = S.requests.filter(r => S.show === "alle" ? ["offen", "uebernommen", "erledigt"].includes(r.status) : r.status === S.show);
   if (f) list = list.filter(r => [r.area, r.title, ...(r.shops || []), ...(r.items || []).map(i => i.t)].join(" ").toLowerCase().includes(f));
   if (S.sort === "lohn") list = [...list].sort((a, b) => earned(b) - earned(a));
   if (S.sort === "dringend") list = [...list].sort((a, b) => String(a.due || "9999").localeCompare(String(b.due || "9999")));
@@ -352,6 +394,8 @@ function readShops() {
 }
 function calcHtml() {
   const { items, shops, p } = formFee();
+  const bEl = document.getElementById("r-budget");
+  const budget = Math.max(0, parseFloat(String(bEl ? bEl.value : ((lastDraft || {}).budget || "")).replace(",", ".")) || 0);
   const line = (k, v, show = true) => show ? `<div><span class="muted">${k}</span><span>${euro(v)}</span></div>` : "";
   return `<div><b>Heldenlohn für deinen Helden</b><span></span></div>
     ${line("Grundlohn", p.base)}
@@ -362,8 +406,9 @@ function calcHtml() {
     ${line("Extra von dir", p.extra, p.extra > 0)}
     <div class="sum"><span>Heldenlohn</span><span>${euro(p.total)}</span></div>
     <div><span class="muted">Servicegebühr Einkaufshelden</span><span>${euro(SERVICE_FEE)}</span></div>
-    <div class="sum"><span>Zusätzlich zum Kassenbon</span><span>${euro(p.total + SERVICE_FEE)}</span></div>
-    <div class="muted" style="font-size:12px">Zahlst du bei der Übergabe an deinen Helden, zusammen mit dem Betrag auf dem Kassenbon.</div>`;
+    <div><span class="muted">Einkauf, höchstens</span><span>${budget ? euro(budget) : "–"}</span></div>
+    <div class="sum"><span>Jetzt auf der Karte reserviert</span><span>${budget ? euro(budget + p.total + SERVICE_FEE) : "–"}</span></div>
+    <div class="muted" style="font-size:12px">Abgebucht wird erst nach dem Einkauf: Betrag vom Kassenbon + ${euro(p.total)} Heldenlohn + ${euro(SERVICE_FEE)} Gebühr. Den Rest gibt deine Bank wieder frei.</div>`;
 }
 
 function vHilfe() {
@@ -384,13 +429,10 @@ function vHilfe() {
         <input id="r-shop-other" maxlength="80" placeholder="Anderer Laden, z. B. Asia-Markt Venloer Str. (mehrere mit Komma)" value="${esc(d.shopOther || "")}" aria-label="Anderer Laden">
       </div>
       <div class="row">
-        <label class="f">Bis wann?<input id="r-due" type="date" min="${todayISO()}" value="${esc(d.due || tomorrow)}"></label>
+        <label class="f">Bis wann? <small>höchstens ${MAX_DAYS_AHEAD} Tage im Voraus</small><input id="r-due" type="date" min="${todayISO()}" max="${addDays(MAX_DAYS_AHEAD)}" required value="${esc(d.due && d.due <= addDays(MAX_DAYS_AHEAD) && d.due >= todayISO() ? d.due : tomorrow)}"></label>
         <label class="f">Tageszeit<select id="r-window">${Object.entries(WINDOWS).map(([k, v]) => `<option value="${k}"${(d.window || "egal") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
       </div>
-      <div class="row">
-        <label class="f">Budget in € <small>Optional, Obergrenze</small><input id="r-budget" type="number" min="0" max="1000" step="0.5" inputmode="decimal" placeholder="30" value="${esc(d.budget || "")}"></label>
-        <label class="f">Bezahlung<select id="r-pay">${Object.entries(PAY).map(([k, v]) => `<option value="${k}"${(d.payment || "bar") === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
-      </div>
+      <label class="f">Höchstbetrag für den Einkauf in € <small>${euro(BUDGET.min)} bis ${euro(BUDGET.max)}. Teurer darf der Kassenbon nicht werden.</small><input id="r-budget" type="number" min="${BUDGET.min}" max="${BUDGET.max}" step="1" inputmode="decimal" required placeholder="z. B. 40" value="${esc(d.budget || "")}"></label>
       <div class="row">
         <label class="f" style="display:flex;gap:8px;align-items:center;font-weight:500"><input id="r-heavy" type="checkbox" style="width:auto"${d.heavy ? " checked" : ""}> Schwere Sachen dabei (Getränkekisten, Katzenstreu …)</label>
         <label class="f">Extra-Lohn drauflegen in € <small>Optional</small><input id="r-extra" type="number" min="0" max="50" step="0.5" inputmode="decimal" placeholder="0" value="${esc(d.extra || "")}"></label>
@@ -398,7 +440,7 @@ function vHilfe() {
       <div class="calc" id="calc" aria-live="polite">${calcHtml()}</div>
       <label class="f">Hinweise <small>Optional, für alle sichtbar. Keine Adresse!</small><textarea id="r-note" maxlength="400" placeholder="Bitte laktosefreie Milch, falls es keine gibt. Ich wohne im 3. OG ohne Aufzug.">${esc(d.note || "")}</textarea></label>
       <div class="form-foot">
-        <button class="btn primary" type="submit">Auftrag veröffentlichen</button>
+        <button class="btn primary" type="submit">Weiter zur Bezahlung</button>
         <span class="msg" id="r-msg" role="status"></span>
       </div>
     </form></div>${sidebar()}</div>`;
@@ -410,72 +452,45 @@ function earnBox(jobs) {
   const sum = (l) => l.reduce((a, r) => a + earned(r), 0);
   const thisMonth = done.filter(r => { const d = toDate(r.doneAt); return d && d.toISOString().slice(0, 7) === month; });
   const pending = jobs.filter(r => r.status === "uebernommen");
-  const tips = done.reduce((a, r) => a + (typeof r.tip === "number" ? r.tip : 0), 0);
+  const waiting = done.filter(r => !r.transferId);
+  const paidOut = done.filter(r => r.transferId).reduce((a, r) => a + (r.transferredAmount || 0), 0);
   return `<section>
     <h2 class="section-title">Mein Heldenlohn</h2>
     <div class="earn">
       <div><b>${euro(sum(thisMonth))}</b><span>verdient diesen Monat</span></div>
       <div><b>${euro(sum(done))}</b><span>insgesamt, ${done.length} ${done.length === 1 ? "Lieferung" : "Lieferungen"}</span></div>
-      <div><b>${euro(tips)}</b><span>davon Trinkgeld</span></div>
-      <div><b>${euro(sum(pending))}</b><span>noch offen in ${pending.length} ${pending.length === 1 ? "Auftrag" : "Aufträgen"}</span></div>
+      <div><b>${euro(sum(waiting) + waiting.reduce((a, r) => a + receipt(r), 0))}</b><span>wird gerade ausgezahlt (inkl. Einkauf)</span></div>
+      <div><b>${euro(paidOut)}</b><span>an dich überwiesen (inkl. Einkauf)</span></div>
     </div>
-    <p class="small" style="margin-top:8px">Die App zählt nur mit. Das Geld bekommst du bei der Übergabe direkt von der Person, für die du einkaufst. Einnahmen musst du ggf. selbst versteuern.</p>
-  </section>
-  ${feeAccount(done)}`;
-}
-
-function feeAccount(done) {
-  const owed = round2(done.reduce((a, r) => a + svc(r), 0));
-  const paid = round2(S.payouts.filter(p => p.helperId === S.myId).reduce((a, p) => a + (p.amount || 0), 0));
-  const open = round2(Math.max(0, owed - paid));
-  if (!owed) return "";
-  const ways = [SITE.paypal ? `PayPal: <b class="sel">${esc(SITE.paypal)}</b>` : "", SITE.iban ? `Überweisung an ${todo(SITE.operatorName, "Name")}, IBAN <b class="sel">${esc(SITE.iban)}</b>` : ""].filter(Boolean);
-  return `<section>
-    <h2 class="section-title">Servicegebühren</h2>
-    <div class="earn">
-      <div><b>${euro(open)}</b><span>an Einkaufshelden zu überweisen</span></div>
-      <div><b>${euro(owed)}</b><span>eingesammelt bei ${(n => n + (n === 1 ? " Lieferung" : " Lieferungen"))(done.filter(r => svc(r)).length)}</span></div>
-      <div><b>${euro(paid)}</b><span>schon überwiesen</span></div>
-    </div>
-    <p class="small" style="margin-top:8px">Bei jeder Übergabe bekommst du ${euro(SERVICE_FEE)} Servicegebühr mit. Bitte überweise den offenen Betrag ${esc(SITE.payRhythm || "einmal im Monat")}${ways.length ? " – " + ways.join(" oder ") : ` – ${todo("", "Zahlungsweg in site-config.js eintragen")}`}. Verwendungszweck: <b class="sel">Einkaufshelden ${esc(S.profile ? S.profile.name : "")} ${esc(S.myId ? S.myId.slice(0, 6) : "")}</b></p>
+    <p class="small" style="margin-top:8px">Du bekommst Kassenbon-Betrag + Heldenlohn auf dein Bankkonto, sobald der Kunde den Erhalt bestätigt, spätestens nach 72 Stunden. ${pending.length ? `Gerade unterwegs: ${pending.length} ${pending.length === 1 ? "Auftrag" : "Aufträge"} mit ${euro(sum(pending))} Heldenlohn.` : ""} Einnahmen musst du ggf. selbst versteuern.</p>
   </section>`;
 }
 
 function vBetreiber() {
   if (!S.isAdmin) return emptyBox("Kein Zugriff", "Dieser Bereich ist nur für den Betreiber.");
-  const per = {};
-  S.requests.forEach(r => {
-    if (r.status !== "erledigt" || !r.helperId || !svc(r)) return;
-    const x = per[r.helperId] || (per[r.helperId] = { n: 0, owed: 0, paid: 0 });
-    x.n++; x.owed += svc(r);
-  });
-  S.payouts.forEach(p => { const x = per[p.helperId] || (per[p.helperId] = { n: 0, owed: 0, paid: 0 }); x.paid += p.amount || 0; });
-  const rows = Object.entries(per).map(([id, x]) => ({ id, ...x, open: round2(Math.max(0, x.owed - x.paid)) })).sort((a, b) => b.open - a.open);
-  const tot = rows.reduce((a, r) => ({ owed: a.owed + r.owed, paid: a.paid + r.paid, open: a.open + r.open }), { owed: 0, paid: 0, open: 0 });
   const month = todayISO().slice(0, 7);
-  const monthFees = S.requests.filter(r => r.status === "erledigt" && svc(r) && (() => { const d = toDate(r.doneAt); return d && d.toISOString().slice(0, 7) === month; })()).reduce((a, r) => a + svc(r), 0);
-  return `<section class="intro"><h1>Betreiber</h1><p>Deine Einnahmen aus der Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf und gemeldete Aufträge.</p></section>
+  const captured = S.requests.filter(r => r.captured);
+  const inMonth = (r) => { const d = toDate(r.doneAt); return d && d.toISOString().slice(0, 7) === month; };
+  const fees = (l) => round2(l.reduce((a, r) => a + svc(r), 0));
+  const problems = S.requests.filter(r => r.paymentError || r.transferError);
+  const reserved = S.requests.filter(r => r.paid && !r.captured && ["offen", "uebernommen"].includes(r.status));
+  return `<section class="intro"><h1>Betreiber</h1><p>Deine Einnahmen aus der Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf. Das Geld liegt auf deinem Stripe-Konto und wird automatisch auf dein Bankkonto überwiesen.</p></section>
     <div class="stack" style="padding-block:16px 56px">
       <section><div class="earn">
-        <div><b>${euro(monthFees)}</b><span>Servicegebühren diesen Monat</span></div>
-        <div><b>${euro(tot.owed)}</b><span>insgesamt angefallen</span></div>
-        <div><b>${euro(tot.paid)}</b><span>bei dir eingegangen</span></div>
-        <div><b>${euro(tot.open)}</b><span>noch offen bei Helden</span></div>
-      </div></section>
-      <section>
-        <h2 class="section-title">Offene Beträge je Held</h2>
-        ${rows.length ? `<div class="tbl"><table>
-          <thead><tr><th>Held</th><th>Lieferungen</th><th>Angefallen</th><th>Bezahlt</th><th>Offen</th><th></th></tr></thead>
-          <tbody>${rows.map(r => `<tr><td>${esc(nameOf(r.id))}<br><small class="sel">${esc(r.id.slice(0, 6))}</small></td><td>${r.n}</td><td>${euro(r.owed)}</td><td>${euro(r.paid)}</td><td><b>${euro(r.open)}</b></td>
-            <td>${r.open > 0 ? `<button class="btn" data-act="payout" data-id="${esc(r.id)}" data-amount="${r.open}">${S.confirm === "pay-" + r.id ? "Eingang bestätigen?" : euro(r.open) + " erhalten"}</button>` : "✓"}</td></tr>`).join("")}</tbody>
-        </table></div>` : `<p class="small">Noch keine Servicegebühren angefallen.</p>`}
-        <p class="small">Wenn eine Überweisung bei dir angekommen ist, klick auf „erhalten“. Der Held sieht dann sofort, dass nichts mehr offen ist.</p>
-      </section>
+        <div><b>${euro(fees(captured.filter(inMonth)))}</b><span>Servicegebühren diesen Monat</span></div>
+        <div><b>${euro(fees(captured))}</b><span>insgesamt, ${captured.length} ${captured.length === 1 ? "Einkauf" : "Einkäufe"}</span></div>
+        <div><b>${reserved.length}</b><span>bezahlte Aufträge in Arbeit</span></div>
+        <div><b>${problems.length}</b><span>Zahlungsprobleme</span></div>
+      </div>
+      <p class="small" style="margin-top:8px">Stripe zieht pro Zahlung eine eigene Gebühr ab (etwa 1,5 % + 0,25 €). Die genauen Beträge siehst du im Stripe-Dashboard.</p></section>
+      ${problems.length ? `<section><h2 class="section-title">Zahlungsprobleme</h2><div class="tbl"><table><thead><tr><th>Auftrag</th><th>Kunde</th><th>Held</th><th>Problem</th></tr></thead><tbody>
+        ${problems.map(r => `<tr><td>${esc(r.title)}<br><small class="sel">${esc(r.id)}</small></td><td>${esc(nameOf(r.createdBy))}</td><td>${esc(nameOf(r.helperId))}</td><td>${esc(r.paymentError || r.transferError)}</td></tr>`).join("")}
+      </tbody></table></div><p class="small">Die App versucht es stündlich erneut. Hilft das nicht, schau im Stripe-Dashboard unter der Auftragsnummer nach.</p></section>` : ""}
       <section>
         <h2 class="section-title">Meldungen</h2>
         ${S.reports.length ? `<div class="tbl"><table><thead><tr><th>Wann</th><th>Auftrag</th><th>Von</th><th></th></tr></thead><tbody>
           ${S.reports.map(rep => { const r = S.requests.find(x => x.id === rep.requestId); return `<tr><td>${esc(ago(rep.at))}</td><td>${r ? esc(r.title) + " · " + esc(r.area) : "<small>schon gelöscht</small>"}</td><td>${esc(nameOf(rep.by))}</td>
-            <td style="white-space:nowrap">${r ? `<button class="btn ghost" data-act="admindel" data-id="${esc(r.id)}">${S.confirm === "adel-" + r.id ? "Auftrag löschen?" : "Auftrag löschen"}</button>` : ""}<button class="btn ghost" data-act="repdone" data-id="${esc(rep.id)}">Erledigt</button></td></tr>`; }).join("")}
+            <td style="white-space:nowrap">${r ? `<button class="btn ghost" data-act="admindel" data-id="${esc(r.id)}">${S.confirm === "adel-" + r.id ? "Löschen und erstatten?" : "Auftrag löschen"}</button>` : ""}<button class="btn ghost" data-act="repdone" data-id="${esc(rep.id)}">Erledigt</button></td></tr>`; }).join("")}
         </tbody></table></div>` : `<p class="small">Keine offenen Meldungen.</p>`}
       </section>
     </div>`;
@@ -508,7 +523,8 @@ function vHeld() {
       <h1>${registered ? "Dein Heldenprofil" : "Werde Einkaufsheld"}</h1>
       <p>Sag kurz, wo und wann du unterwegs bist. Danach kannst du Einkaufslisten übernehmen und ab ${euro(FEE.base)} pro Einkauf verdienen.</p>
     </section>
-    <div class="layout"><div>
+    <div class="layout"><div class="stack">
+    ${registered ? payoutBox() : ""}
     <form class="card" id="heroForm" autocomplete="off">
       <div class="row">
         <label class="f">Mein Gebiet <small>Stadtteil oder PLZ</small><input id="h-area" required maxlength="60" placeholder="z. B. Ehrenfeld, Neuehrenfeld" value="${esc(h.area || "")}"></label>
@@ -526,6 +542,18 @@ function vHeld() {
         <span class="msg" id="h-msg" role="status"></span>
       </div>
     </form></div>${sidebar()}</div>`;
+}
+
+function payoutBox() {
+  const ready = S.payoutReady;
+  return `<section class="card payout">
+    <h2>Auszahlungskonto</h2>
+    ${ready ? `<p><span class="pill erledigt">Aktiv</span> Dein Geld kommt automatisch auf dein Bankkonto: Kassenbon-Betrag + Heldenlohn, nach jeder bestätigten Lieferung.</p>
+        <div class="actions"><button class="btn" type="button" id="payoutDash">Auszahlungen ansehen</button></div>`
+      : `<p>Damit du Aufträge übernehmen kannst, brauchst du ein Auszahlungskonto bei unserem Zahlungsdienstleister Stripe. Dort gibst du einmalig deine Bankverbindung an und bestätigst deine Identität mit Ausweis. Das dauert etwa 5 Minuten.</p>
+        <div class="actions"><button class="btn primary" type="button" id="payoutSetup">Auszahlungskonto einrichten</button></div>`}
+    <span class="msg" id="po-msg" role="status"></span>
+  </section>`;
 }
 
 function vHelden() {
@@ -574,7 +602,7 @@ function render() {
   const focusId = active && active.id;
   const selStart = active && "selectionStart" in active ? active.selectionStart : null;
   const cur = view();
-  const formKey = S.myId + "|" + ((S.helpers[S.myId] && "h") || "") + "|" + S.confirm;
+  const formKey = S.myId + "|" + ((S.helpers[S.myId] && "h") || "") + "|" + S.confirm + "|" + S.payoutReady;
   if ((cur === "hilfe" || cur === "held" || cur === "konto") && S.renderedView === cur && S.formKey === formKey && v.querySelector("form")) return;
   v.innerHTML = ({ auftraege: vAuftraege, hilfe: vHilfe, meine: vMeine, held: vHeld, helden: vHelden, konto: vKonto, betreiber: vBetreiber })[cur]();
   S.renderedView = cur; S.formKey = formKey;
@@ -604,6 +632,18 @@ const authErr = (e) => ({
   "auth/popup-blocked": "Dein Browser hat das Anmeldefenster blockiert. Erlaube Pop-ups für diese Seite.",
   "auth/requires-recent-login": "Bitte melde dich einmal ab und wieder an, dann klappt es.",
 }[e && e.code] || "Das hat nicht geklappt. Versuch es noch einmal.");
+
+// ---------- Bezahlen ----------
+const fnErr = (e) => (e && e.message && !/^(internal|INTERNAL)$/.test(e.message)) ? e.message : "Das hat nicht geklappt. Versuch es gleich noch einmal.";
+async function startCheckout(id) {
+  await withBusy(id, async () => {
+    try {
+      const res = await call("createCheckout", { requestId: id });
+      if (res.url) { location.href = res.url; return; }
+      toast("Bezahlt (Testmodus). Dein Auftrag ist jetzt für Helden sichtbar.");
+    } catch (e) { const err = new Error(e.message); err.userMsg = fnErr(e); throw err; }
+  });
+}
 
 // ---------- Aktionen ----------
 const reqRef = (id) => doc(db, "requests", id);
@@ -654,6 +694,16 @@ document.addEventListener("click", async (ev) => {
     S.renderedView = null; render(); return;
   }
   if (t.closest("#delAccount")) return deleteAccount();
+  if (t.closest("#payoutSetup") || t.closest("#payoutDash")) {
+    const setup = !!t.closest("#payoutSetup"); const m = $("#po-msg");
+    if (m) { m.textContent = setup ? "Du wirst zu Stripe weitergeleitet …" : "Einen Moment …"; m.className = "msg"; }
+    try {
+      const res = await call(setup ? "helperOnboarding" : "helperDashboard");
+      if (res.url) location.href = res.url;
+      else if (m) m.textContent = setup ? "Auszahlungskonto ist eingerichtet (Testmodus)." : "Im Testmodus gibt es kein Stripe-Dashboard.";
+    } catch (e) { console.error(e); if (m) { m.textContent = fnErr(e); m.className = "msg err"; } }
+    return;
+  }
 
   const b = t.closest("button[data-act]");
   if (!b) return;
@@ -664,23 +714,25 @@ document.addEventListener("click", async (ev) => {
     setTimeout(() => { if (S.confirm === key) { S.confirm = null; S.renderedView = null; render(); } }, 4000);
     return false;
   };
-  if (act === "payout") {
-    if (!confirmOnce("pay-" + id)) return;
-    const amount = round2(Number(b.dataset.amount) || 0);
-    return withBusy("pay-" + id, () => addDoc(collection(db, "payouts"), { helperId: id, amount, by: S.myId, at: serverTimestamp() }));
-  }
   if (act === "repdone") return withBusy("rep-" + id, () => deleteDoc(doc(db, "reports", id)));
-  if (act === "admindel") { if (!confirmOnce("adel-" + id)) return; return withBusy(id, () => deleteDoc(reqRef(id))); }
+  if (act === "admindel") { if (!confirmOnce("adel-" + id)) return; return withBusy(id, () => call("cancelRequest", { requestId: id })); }
   const r = S.requests.find(x => x.id === id);
   if (!r) return;
   if (act === "take") return take(id);
   if (act === "chat") return openChat(r);
-  if (act === "release") return withBusy(id, () => updateDoc(reqRef(id), { status: "offen", helperId: null, takenAt: null, items: (r.items || []).map(i => ({ t: i.t, done: false })) }));
-  if (act === "deliver") return withBusy(id, () => updateDoc(reqRef(id), { status: "erledigt", doneAt: serverTimestamp() }));
-  if (act === "thanks") { const tip = Math.max(0, Number(b.dataset.tip) || 0); return withBusy(id, () => updateDoc(reqRef(id), tip ? { thanks: true, tip } : { thanks: true })); }
+  if (act === "pay") return startCheckout(id);
+  if (act === "release") return withBusy(id, () => updateDoc(reqRef(id), { status: "offen", helperId: null, takenAt: null, onTheWay: false, items: (r.items || []).map(i => ({ t: i.t, done: false })) }));
+  if (act === "onway") return withBusy(id, () => updateDoc(reqRef(id), { onTheWay: true }));
+  if (act === "deliver") {
+    S.deliverFor = S.deliverFor === id ? null : id; S.renderedView = null; render();
+    const inp = document.getElementById("rc-" + id); if (inp) inp.focus();
+    return;
+  }
+  if (act === "thanks") return withBusy(id, () => updateDoc(reqRef(id), { thanks: true }));
   if (act === "cancel") {
     if (S.confirm !== id) { S.confirm = id; S.renderedView = null; render(); setTimeout(() => { if (S.confirm === id) { S.confirm = null; S.renderedView = null; render(); } }, 4000); return; }
     S.confirm = null;
+    if (r.status === "offen") return withBusy(id, async () => { await call("cancelRequest", { requestId: id }); toast("Zurückgezogen. Die Reservierung auf deiner Karte ist aufgehoben."); });
     return withBusy(id, () => deleteDoc(reqRef(id)));
   }
   if (act === "report") {
@@ -710,7 +762,7 @@ document.addEventListener("input", (ev) => {
   }
   if (ev.target.closest("#reqForm")) {
     const c = $("#calc"); if (c) c.innerHTML = calcHtml();
-    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shops: [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value), shopOther: $("#r-shop-other").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, payment: $("#r-pay").value, note: $("#r-note").value };
+    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shops: [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value), shopOther: $("#r-shop-other").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, note: $("#r-note").value };
     try { localStorage.setItem("eh-draft", JSON.stringify(lastDraft)); } catch (e) {}
   }
 });
@@ -750,10 +802,22 @@ document.addEventListener("submit", async (ev) => {
     return;
   }
 
+  if (form.classList.contains("receipt")) {
+    const id = form.dataset.id;
+    const r = S.requests.find(x => x.id === id); if (!r) return;
+    const val = round2(parseFloat(String(form.querySelector("input").value).replace(",", ".")));
+    if (!(val > 0) || val > r.budget) { toast(`Der Kassenbon-Betrag muss zwischen 0,01 € und ${euro(r.budget)} liegen.`); return; }
+    S.deliverFor = null;
+    return withBusy(id, () => updateDoc(reqRef(id), { status: "erledigt", doneAt: serverTimestamp(), receiptTotal: val }));
+  }
+
   if (form.id === "reqForm") {
     const items = $("#r-items").value.split("\n").map(s => s.trim().replace(/^[-*•·]\s*/, "")).filter(Boolean).slice(0, 60).map(t => ({ t: t.slice(0, 120), done: false }));
     if (!items.length) { setMsg("#r-msg", "Schreib mindestens einen Artikel auf die Liste.", true); return; }
-    const b = parseFloat(String($("#r-budget").value).replace(",", "."));
+    const b = round2(parseFloat(String($("#r-budget").value).replace(",", ".")));
+    if (!(b >= BUDGET.min && b <= BUDGET.max)) { setMsg("#r-msg", `Der Höchstbetrag muss zwischen ${euro(BUDGET.min)} und ${euro(BUDGET.max)} liegen.`, true); return; }
+    const due = $("#r-due").value;
+    if (!due || due < todayISO() || due > addDays(MAX_DAYS_AHEAD)) { setMsg("#r-msg", `Wähle ein Datum zwischen heute und in ${MAX_DAYS_AHEAD} Tagen.`, true); return; }
     const shops = readShops();
     if (document.querySelectorAll("#reqForm input[name=shop]:checked").length + ($("#r-shop-other").value.split(",").filter(x => x.trim()).length) > MAX_SHOPS) {
       setMsg("#r-msg", `Bitte wähle höchstens ${MAX_SHOPS} Läden.`, true); return;
@@ -763,20 +827,22 @@ document.addEventListener("submit", async (ev) => {
     const data = {
       title: $("#r-title").value.trim().slice(0, 80), items,
       area: $("#r-area").value.trim().slice(0, 60), due: $("#r-due").value || null,
-      window: $("#r-window").value, budget: isFinite(b) && b > 0 ? Math.min(round2(b), 1000) : null,
-      payment: $("#r-pay").value, note,
+      window: $("#r-window").value, budget: b,
+      payment: "online", note,
       shops, serviceFee: SERVICE_FEE,
       fee: fee.total, feeParts: { base: fee.base, shops: fee.shops, items: fee.items, heavy: fee.heavy, express: fee.express, extra: fee.extra },
-      status: "offen", createdBy: S.myId, helperId: null, thanks: false,
+      status: "zahlung_offen", createdBy: S.myId, helperId: null, thanks: false,
       createdAt: serverTimestamp(),
     };
-    btn.disabled = true; setMsg("#r-msg", "Wird veröffentlicht …");
+    btn.disabled = true; setMsg("#r-msg", "Weiter zur Bezahlung …");
+    let ref;
     try {
-      await addDoc(collection(db, "requests"), data);
+      ref = await addDoc(collection(db, "requests"), data);
       lastDraft = null; try { localStorage.removeItem("eh-draft"); } catch (e) {}
-      S.renderedView = null;
-      location.hash = "#meine";
-    } catch (e) { console.error(e); setMsg("#r-msg", errText(e), true); btn.disabled = false; }
+    } catch (e) { console.error(e); setMsg("#r-msg", errText(e), true); btn.disabled = false; return; }
+    S.renderedView = null;
+    location.hash = "#meine";
+    await startCheckout(ref.id);
     return;
   }
 
@@ -848,8 +914,8 @@ async function deleteAccount() {
   if (S.confirm !== "delacc") { S.confirm = "delacc"; render(); return; }
   S.confirm = null;
   const msg = $("#del-msg");
-  if (S.requests.some(r => r.createdBy === S.myId && r.status === "uebernommen")) {
-    msg.textContent = "Du hast noch Aufträge, für die gerade jemand einkauft. Schließt diese zuerst ab."; msg.className = "msg err"; return;
+  if (S.requests.some(r => r.createdBy === S.myId && (["offen", "uebernommen"].includes(r.status) || (r.status === "erledigt" && !r.transferId)))) {
+    msg.textContent = "Du hast noch laufende oder nicht abgerechnete Aufträge. Zieh offene Aufträge zurück und bestätige gelieferte, dann klappt es."; msg.className = "msg err"; return;
   }
   if (S.requests.some(r => r.helperId === S.myId && r.status === "uebernommen")) {
     msg.textContent = "Du kaufst gerade noch für jemanden ein. Liefere oder gib den Auftrag zuerst ab."; msg.className = "msg err"; return;
@@ -857,7 +923,7 @@ async function deleteAccount() {
   msg.textContent = "Konto wird gelöscht …"; msg.className = "msg";
   try {
     const own = await getDocs(query(collection(db, "requests"), where("createdBy", "==", S.myId)));
-    for (const d of own.docs) { if (d.data().status !== "uebernommen") await deleteDoc(d.ref); }
+    for (const d of own.docs) { const x = d.data(); if (["zahlung_offen", "abgelaufen"].includes(x.status) || x.transferId) await deleteDoc(d.ref); }
     await deleteDoc(doc(db, "helpers", S.myId)).catch(() => {});
     await deleteDoc(doc(db, "users", S.myId));
     stopData();
@@ -866,7 +932,7 @@ async function deleteAccount() {
 }
 
 // ---------- Daten-Abos ----------
-function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); S.isAdmin = false; S.payouts = []; S.reports = []; }
+function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); S.isAdmin = false; S.reports = []; S.payoutReady = null; }
 
 function startData() {
   stopData();
@@ -886,21 +952,28 @@ function startData() {
     render(); loadNames();
   }, (e) => { console.error(e); if (String(e.code).includes("permission")) return; S.error = "Die Aufträge konnten nicht geladen werden. Lade die Seite neu."; S.loaded = true; render(); }));
 
+  // Auszahlungskonto (schreibt nur der Server)
+  unsubs.push(onSnapshot(doc(db, "payoutStatus", S.myId), (snap) => {
+    S.payoutReady = snap.exists() ? !!snap.data().ready : false; render();
+  }, (e) => console.error(e)));
+
   // Betreiber-Rechte: Dokument admins/{uid} wird von Hand in der Firebase-Konsole angelegt.
   getDoc(doc(db, "admins", S.myId)).then(snap => {
     S.isAdmin = snap.exists();
-    const payQ = S.isAdmin ? collection(db, "payouts") : query(collection(db, "payouts"), where("helperId", "==", S.myId));
-    unsubs.push(onSnapshot(payQ, (s) => {
-      S.payouts = s.docs.map(d => Object.assign({ id: d.id }, d.data()));
-      // Nur Ansichten ohne Formular neu aufbauen, damit nichts Eingetipptes verloren geht.
-      if (S.profile && ["meine", "betreiber"].includes(view())) S.renderedView = null;
-      render();
-    }, (e) => console.error(e)));
     if (S.isAdmin) unsubs.push(onSnapshot(query(collection(db, "reports"), orderBy("at", "desc"), limit(200)), (s) => {
       S.reports = s.docs.map(d => Object.assign({ id: d.id }, d.data({ serverTimestamps: "estimate" }))); render();
     }, (e) => console.error(e)));
     render();
   }).catch(() => {});
+
+  // Rückkehr von Stripe
+  const qs = new URLSearchParams(location.search);
+  if (qs.has("bezahlt") || qs.has("stripe")) {
+    if (qs.get("bezahlt") === "1") toast("Danke, bezahlt! Sobald Stripe die Zahlung bestätigt, sehen die Helden deinen Auftrag.");
+    if (qs.get("bezahlt") === "0") toast("Bezahlung abgebrochen. Du kannst sie unter „Meine Einkäufe“ jederzeit nachholen.");
+    if (qs.get("stripe")) call("refreshPayoutStatus").catch(e => console.error(e));
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
 
   unsubs.push(onSnapshot(collection(db, "helpers"), (snap) => {
     const m = {}; snap.docs.forEach(d => { m[d.id] = d.data(); });

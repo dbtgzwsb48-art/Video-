@@ -244,3 +244,15 @@ a.btn.primary, .btn.primary { color: var(--accent-ink); }
 .sel { user-select: all; }
 .todo { background: var(--gold-soft); padding: 1px 5px; border-radius: 4px; }
 .checks label { white-space: nowrap; }
+
+.pill.zahlung_offen, .pill.abgelaufen { background: var(--line); color: var(--muted); }
+.track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; font-size: 11px; color: var(--muted); }
+.track li { border-top: 3px solid var(--line); padding-top: 4px; line-height: 1.2; overflow-wrap: anywhere; }
+.track li.done { border-color: var(--accent); color: var(--ink); }
+.track li.cur { font-weight: 700; color: var(--accent); }
+form.receipt { display: grid; gap: 8px; width: 100%; border: 1px dashed var(--line); border-radius: 8px; padding: 10px; background: var(--surface); }
+.warn { color: var(--danger); }
+.card.payout { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; max-width: 680px; }
+.card.payout h2 { font-size: 19px; }
+.card.payout p { margin: 0; }
+.layout > .stack { gap: 18px; }

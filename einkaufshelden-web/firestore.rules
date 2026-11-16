@@ -16,6 +16,10 @@ service cloud.firestore {
     function isHelper() { return exists(/databases/$(database)/documents/helpers/$(uid())); }
     function hasProfile() { return exists(/databases/$(database)/documents/users/$(uid())); }
     // Betreiber: Dokument admins/{uid} von Hand in der Firebase-Konsole anlegen.
+    function payoutReady() {
+      return exists(/databases/$(database)/documents/payoutStatus/$(uid()))
+        && get(/databases/$(database)/documents/payoutStatus/$(uid())).data.ready == true;
+    }
     function isAdmin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(uid())); }
 
     // Mindest-Heldenlohn, muss zu FEE.base in public/app.js passen.
@@ -56,7 +60,7 @@ service cloud.firestore {
         && newData().keys().hasOnly(['title', 'items', 'area', 'due', 'window', 'budget', 'payment', 'note',
                                      'fee', 'feeParts', 'shops', 'serviceFee', 'status', 'createdBy', 'helperId', 'thanks', 'createdAt'])
         && newData().createdBy == uid()
-        && newData().status == 'offen'
+        && newData().status == 'zahlung_offen'   // erst nach der Zahlung setzt der Server 'offen'
         && newData().helperId == null
         && newData().thanks == false
         && newData().createdAt == request.time
@@ -67,14 +71,14 @@ service cloud.firestore {
         && newData().fee is number && newData().fee >= MIN_FEE() && newData().fee <= 100
         && newData().serviceFee == SERVICE_FEE()
         && newData().shops is list && newData().shops.size() <= 6
-        && (newData().budget == null || (newData().budget is number && newData().budget >= 0 && newData().budget <= 1000))
-        && newData().payment in ['bar', 'paypal', 'ueberweisung', 'vorab']
+        && newData().budget is number && newData().budget >= 5 && newData().budget <= 300
+        && newData().payment == 'online'
         && newData().window in ['egal', 'vormittags', 'mittags', 'nachmittags', 'abends'];
 
       allow update: if signedIn() && (
         // 1. Ein angemeldeter Held übernimmt einen offenen Auftrag (nicht den eigenen)
         (oldData().status == 'offen' && oldData().helperId == null
-          && oldData().createdBy != uid() && isHelper()
+          && oldData().createdBy != uid() && isHelper() && payoutReady()
           && newData().status == 'uebernommen' && newData().helperId == uid()
           && newData().takenAt == request.time
           && changedOnly(['status', 'helperId', 'takenAt']))
@@ -85,26 +89,36 @@ service cloud.firestore {
           && newData().items is list && newData().items.size() == oldData().items.size()
           && changedOnly(['items']))
 
-        // 3. Der Held meldet „Geliefert“
+        // 3. Der Held meldet „Bin unterwegs“
+        || (oldData().status == 'uebernommen' && oldData().helperId == uid()
+          && newData().status == 'uebernommen' && newData().onTheWay == true
+          && changedOnly(['onTheWay']))
+
+        // 4. Der Held meldet „Geliefert“ mit dem Betrag vom Kassenbon (höchstens das Budget)
         || (oldData().status == 'uebernommen' && oldData().helperId == uid()
           && newData().status == 'erledigt' && newData().doneAt == request.time
-          && changedOnly(['status', 'doneAt']))
+          && newData().receiptTotal is number && newData().receiptTotal > 0 && newData().receiptTotal <= oldData().budget
+          && changedOnly(['status', 'doneAt', 'receiptTotal']))
 
-        // 4. Der Held gibt den Auftrag zurück
+        // 5. Der Held gibt den Auftrag zurück
         || (oldData().status == 'uebernommen' && oldData().helperId == uid()
           && newData().status == 'offen' && newData().helperId == null && newData().takenAt == null
+          && newData().onTheWay == false
           && newData().items.size() == oldData().items.size()
-          && changedOnly(['status', 'helperId', 'takenAt', 'items']))
+          && changedOnly(['status', 'helperId', 'takenAt', 'items', 'onTheWay']))
 
-        // 5. Die anfragende Person sagt Danke, optional mit Trinkgeld (max. 50 €)
+        // 6. Die anfragende Person bestätigt den Erhalt, optional mit Trinkgeld (max. 50 €)
         || (oldData().status == 'erledigt' && oldData().createdBy == uid() && oldData().thanks == false
           && newData().thanks == true
           && (!('tip' in newData()) || (newData().tip is number && newData().tip >= 0 && newData().tip <= 50))
           && changedOnly(['thanks', 'tip']))
       );
 
-      // Eigene Aufträge löschen, solange nicht gerade jemand dafür einkauft
-      allow delete: if (signedIn() && oldData().createdBy == uid() && oldData().status != 'uebernommen') || isAdmin();
+      // Selbst löschen nur, solange nichts bezahlt ist, nach der Auszahlung oder nach Ablauf.
+      // Bezahlte offene Aufträge zieht man über die Server-Funktion zurück (hebt die Reservierung auf).
+      allow delete: if signedIn() && oldData().createdBy == uid()
+        && (oldData().status in ['zahlung_offen', 'abgelaufen']
+            || (oldData().status == 'erledigt' && oldData().get('transferId', null) != null));
 
       // ---------- Privater Übergabe-Chat ----------
       match /messages/{msgId} {
@@ -126,16 +140,14 @@ service cloud.firestore {
       allow list, write: if false;
     }
 
-    // Zahlungseingänge der Servicegebühren: nur der Betreiber trägt ein, jeder Held sieht seine eigenen.
-    match /payouts/{payoutId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.helperId == uid());
-      allow create: if isAdmin()
-        && newData().keys().hasOnly(['helperId', 'amount', 'by', 'at'])
-        && text(newData().helperId, 1, 128)
-        && newData().amount is number && newData().amount > 0 && newData().amount <= 10000
-        && newData().by == uid()
-        && newData().at == request.time;
-      allow update, delete: if isAdmin();
+    // Stripe-Konten der Helden: nur der Server.
+    match /stripeAccounts/{userId} {
+      allow read, write: if false;
+    }
+    // Ob ein Held Auszahlungen empfangen kann: schreibt nur der Server.
+    match /payoutStatus/{userId} {
+      allow read: if signedIn();
+      allow write: if false;
     }
 
     // ---------- Meldungen (anlegen alle, lesen und erledigen nur der Betreiber) ----------
