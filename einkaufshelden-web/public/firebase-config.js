@@ -10,4 +10,4 @@ export const firebaseConfig = {
 };
 
 // Für Push-Benachrichtigungen aufs Handy: Projekteinstellungen → Cloud Messaging → Web-Push-Zertifikate → Schlüsselpaar generieren.
-export const vapidKey = "HIER_VAPID_KEY_EINTRAGEN";
+export const vapidKey = "BEl3csvLHBQ3U5-j7XXb0Y70vt6QOeEL3XW-3D1HPc9RTZhYCNV9qIgt_Gb40hr1YYXHErV0OeM4R5hjllCUJIo";
