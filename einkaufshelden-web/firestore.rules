@@ -15,9 +15,13 @@ service cloud.firestore {
     function text(v, minLen, maxLen) { return v is string && v.size() >= minLen && v.size() <= maxLen; }
     function isHelper() { return exists(/databases/$(database)/documents/helpers/$(uid())); }
     function hasProfile() { return exists(/databases/$(database)/documents/users/$(uid())); }
+    // Betreiber: Dokument admins/{uid} von Hand in der Firebase-Konsole anlegen.
+    function isAdmin() { return signedIn() && exists(/databases/$(database)/documents/admins/$(uid())); }
 
     // Mindest-Heldenlohn, muss zu FEE.base in public/app.js passen.
     function MIN_FEE() { return 3; }
+    // Servicegebühr je Einkauf für den Betreiber, muss zu SERVICE_FEE in public/app.js passen.
+    function SERVICE_FEE() { return 0.2; }
 
     // ---------- Profile ----------
     match /users/{userId} {
@@ -49,7 +53,7 @@ service cloud.firestore {
 
       allow create: if signedIn() && hasProfile()
         && newData().keys().hasOnly(['title', 'items', 'area', 'due', 'window', 'budget', 'payment', 'note',
-                                     'fee', 'feeParts', 'status', 'createdBy', 'helperId', 'thanks', 'createdAt'])
+                                     'fee', 'feeParts', 'shops', 'serviceFee', 'status', 'createdBy', 'helperId', 'thanks', 'createdAt'])
         && newData().createdBy == uid()
         && newData().status == 'offen'
         && newData().helperId == null
@@ -60,6 +64,8 @@ service cloud.firestore {
         && text(newData().note, 0, 500)
         && newData().items is list && newData().items.size() >= 1 && newData().items.size() <= 60
         && newData().fee is number && newData().fee >= MIN_FEE() && newData().fee <= 100
+        && newData().serviceFee == SERVICE_FEE()
+        && newData().shops is list && newData().shops.size() <= 6
         && (newData().budget == null || (newData().budget is number && newData().budget >= 0 && newData().budget <= 1000))
         && newData().payment in ['bar', 'paypal', 'ueberweisung', 'vorab']
         && newData().window in ['egal', 'vormittags', 'mittags', 'nachmittags', 'abends'];
@@ -97,7 +103,7 @@ service cloud.firestore {
       );
 
       // Eigene Aufträge löschen, solange nicht gerade jemand dafür einkauft
-      allow delete: if signedIn() && oldData().createdBy == uid() && oldData().status != 'uebernommen';
+      allow delete: if (signedIn() && oldData().createdBy == uid() && oldData().status != 'uebernommen') || isAdmin();
 
       // ---------- Privater Übergabe-Chat ----------
       match /messages/{msgId} {
@@ -113,7 +119,25 @@ service cloud.firestore {
       }
     }
 
-    // ---------- Meldungen (nur anlegen, lesen nur in der Firebase-Konsole) ----------
+    // ---------- Betreiber ----------
+    match /admins/{userId} {
+      allow get: if isMe(userId);
+      allow list, write: if false;
+    }
+
+    // Zahlungseingänge der Servicegebühren: nur der Betreiber trägt ein, jeder Held sieht seine eigenen.
+    match /payouts/{payoutId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.helperId == uid());
+      allow create: if isAdmin()
+        && newData().keys().hasOnly(['helperId', 'amount', 'by', 'at'])
+        && text(newData().helperId, 1, 128)
+        && newData().amount is number && newData().amount > 0 && newData().amount <= 10000
+        && newData().by == uid()
+        && newData().at == request.time;
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------- Meldungen (anlegen alle, lesen und erledigen nur der Betreiber) ----------
     match /reports/{reportId} {
       allow create: if signedIn()
         && newData().keys().hasOnly(['by', 'requestId', 'reason', 'at'])
@@ -121,7 +145,8 @@ service cloud.firestore {
         && text(newData().requestId, 1, 100)
         && text(newData().reason, 1, 500)
         && newData().at == request.time;
-      allow read, update, delete: if false;
+      allow read, delete: if isAdmin();
+      allow update: if false;
     }
   }
 }

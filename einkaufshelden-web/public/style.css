@@ -230,3 +230,17 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; color:
 a.btn.primary, .btn.primary { color: var(--accent-ink); }
 .tarif dd { white-space: nowrap; }
 .bubble time { display: block; }
+
+.shops { display: flex; flex-wrap: wrap; gap: 4px; }
+.shops span { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--blue-soft); color: var(--blue); }
+.checks label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+#r-shop-other { margin-top: 4px; }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.tbl table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tbl th, .tbl td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.tbl th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.tbl td { font-variant-numeric: tabular-nums; }
+.tbl tr:last-child td { border-bottom: 0; }
+.sel { user-select: all; }
+.todo { background: var(--gold-soft); padding: 1px 5px; border-radius: 4px; }
+.checks label { white-space: nowrap; }

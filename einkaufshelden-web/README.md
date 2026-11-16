@@ -17,17 +17,54 @@ Sie nutzt **Firebase** von Google für Anmeldung, Datenbank und Hosting. Für de
 - Installierbar auf dem Handy (PWA), funktioniert auch bei schwachem Netz
 
 Die Sicherheitsregeln in `firestore.rules` sorgen dafür, dass niemand fremde Aufträge ändern,
-sich selbst mehr Lohn geben oder fremde Chats lesen kann. Das ist mit 9 automatischen Tests abgesichert (`npm test`).
+sich selbst mehr Lohn geben, die Servicegebühr weglassen oder fremde Chats lesen kann. Zahlungseingänge
+kann nur der Betreiber eintragen. Das ist mit 12 automatischen Tests abgesichert (`npm test`).
+
+## Läden und Servicegebühr
+
+- Beim Anfragen wählt man **einen oder mehrere Läden** (bis zu 6) aus einer Liste oder trägt eigene ein.
+  Jeder weitere Laden bringt dem Helden **+ 1 €** mehr Heldenlohn, weil er dafür einen Weg mehr hat.
+- Bei jedem Einkauf fallen **0,20 € Servicegebühr für dich als Betreiber** an. Die anfragende Person sieht sie
+  vorher und zahlt sie bei der Übergabe an den Helden. Der Held sieht unter „Meine Einkäufe“, wie viel er
+  dir schuldet, und überweist es dir einmal im Monat.
+- In der **Betreiber-Ansicht** siehst du deine Einnahmen, was jeder Held noch offen hat, und bestätigst
+  mit einem Klick, wenn eine Überweisung angekommen ist. Dort siehst du auch gemeldete Aufträge.
+
+### Dich als Betreiber freischalten
+
+1. Melde dich einmal ganz normal in der App an.
+2. Firebase-Konsole → **Authentication → Nutzer** → kopiere deine **Nutzer-UID**.
+3. **Firestore Database → Sammlung starten** → Sammlungs-ID `admins`, Dokument-ID = deine UID,
+   ein Feld `seit` (Typ string) mit dem heutigen Datum → Speichern.
+4. App neu laden. Oben erscheint der Reiter **Betreiber**.
+
+### Deine Bankdaten eintragen
+
+In `public/site-config.js` trägst du deinen Namen und deine PayPal-Adresse und/oder IBAN ein.
+Diese Angaben sehen die Helden, damit sie dir die Gebühren überweisen können.
+
+> **Wichtig:** Sobald du Gebühren einnimmst, betreibst du ein Gewerbe. Melde es beim Gewerbeamt deiner
+> Stadt an (ca. 20–60 €) und gib die Einnahmen in der Steuererklärung an. Als Kleinunternehmer
+> (unter 25.000 € Umsatz im Vorjahr) brauchst du keine Umsatzsteuer auszuweisen.
+
+### Später: automatische Bezahlung
+
+Statt dem Vertrauensmodell (Held leitet weiter) kann die App später echte Online-Zahlungen über
+**Stripe Connect** bekommen. Dann zahlt die anfragende Person per Karte oder PayPal in der App,
+und die 0,20 € werden automatisch für dich einbehalten. Dafür brauchst du den Firebase-Tarif Blaze
+und ein Stripe-Konto mit Gewerbe.
 
 ## Heldenlohn ändern
 
 Der Tarif steht ganz oben in `public/app.js`:
 
 ```js
-export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2 };
+export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2, extraShop: 1 };
+export const SERVICE_FEE = 0.2;
 ```
 
 Wenn du den Grundlohn änderst, pass auch `MIN_FEE()` in `firestore.rules` an.
+Wenn du die Servicegebühr änderst, pass auch `SERVICE_FEE()` in `firestore.rules` und den Betrag in `public/agb.html` an.
 
 ---
 
@@ -135,6 +172,7 @@ Anmeldungen und Daten sind dort nur zum Testen und verschwinden beim Beenden.
 |---|---|
 | `public/index.html`, `public/app.js`, `public/style.css` | Die App |
 | `public/firebase-config.js` | Deine Firebase-Zugangsdaten (Schritt 4) |
+| `public/site-config.js` | Deine Bankdaten für die Servicegebühren |
 | `public/impressum.html`, `datenschutz.html`, `agb.html` | Rechtstexte (Schritt 8) |
 | `public/manifest.webmanifest`, `public/sw.js`, `public/icons/` | Installation als Handy-App |
 | `public/vendor/`, `public/fonts/` | Firebase-Bibliothek und Schriften, lokal gespeichert (keine Google-Fonts-Abfrage) |

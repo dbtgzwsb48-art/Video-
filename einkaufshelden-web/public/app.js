@@ -10,15 +10,20 @@ import {
   addDoc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, where, runTransaction, serverTimestamp,
 } from "./vendor/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
+import { SITE } from "./site-config.js";
 
 // ---------- Tarif ----------
 // Heldenlohn: Grundlohn + Artikelzuschlag ab dem 11. Artikel + Zuschläge. Muss zu firestore.rules passen (MIN_FEE).
-export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2 };
+export const FEE = { base: 3, perItem: 0.2, freeItems: 10, heavy: 2, express: 2, extraShop: 1 };
+// Servicegebühr je Einkauf für den Betreiber. Muss zu SERVICE_FEE() in firestore.rules passen.
+export const SERVICE_FEE = 0.2;
 const TIP_OPTIONS = [2, 5];
+const SHOPS = ["Aldi", "Lidl", "Rewe", "Edeka", "Penny", "Netto", "Kaufland", "Norma", "dm", "Rossmann", "Apotheke", "Getränkemarkt", "Bäckerei", "Wochenmarkt", "Bio-Laden", "Drogerie egal", "Supermarkt egal"];
+const MAX_SHOPS = 6;
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const VIEWS = ["auftraege", "hilfe", "meine", "held", "helden", "konto"];
+const VIEWS = ["auftraege", "hilfe", "meine", "held", "helden", "konto", "betreiber"];
 const WINDOWS = { egal: "egal wann", vormittags: "vormittags", mittags: "mittags", nachmittags: "nachmittags", abends: "abends" };
 const PAY = { bar: "Bar bei Übergabe", paypal: "PayPal", ueberweisung: "Überweisung", vorab: "Geld wird vorab übergeben" };
 const STATUS = { offen: "Offen", uebernommen: "Übernommen", erledigt: "Geliefert" };
@@ -27,17 +32,20 @@ const euro = (n) => (typeof n === "number" && isFinite(n)) ? n.toLocaleString("d
 const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
 const round2 = (n) => Math.round(n * 100) / 100;
 
-export function calcFee(count, heavy, due, extra) {
+export function calcFee(count, heavy, due, extra, shopCount = 1) {
   const parts = {
     base: FEE.base,
+    shops: Math.max(0, Math.min(shopCount, MAX_SHOPS) - 1) * FEE.extraShop,
     items: round2(Math.max(0, count - FEE.freeItems) * FEE.perItem),
     heavy: heavy ? FEE.heavy : 0,
     express: due && due <= todayISO() ? FEE.express : 0,
     extra: extra > 0 ? round2(Math.min(extra, 50)) : 0,
   };
-  parts.total = round2(parts.base + parts.items + parts.heavy + parts.express + parts.extra);
+  parts.total = round2(parts.base + parts.shops + parts.items + parts.heavy + parts.express + parts.extra);
   return parts;
 }
+const svc = (r) => typeof r.serviceFee === "number" ? r.serviceFee : 0;
+const todo = (v, label) => (!v || String(v).startsWith("HIER")) ? `<span class="todo">[${label}]</span>` : esc(v);
 const earned = (r) => (typeof r.fee === "number" ? r.fee : 0) + (typeof r.tip === "number" ? r.tip : 0);
 const toDate = (t) => t && typeof t.toDate === "function" ? t.toDate() : (t ? new Date(t) : null);
 
@@ -70,6 +78,7 @@ const S = {
   filter: "", show: "offen", sort: "neu", busy: new Set(), confirm: null, flash: null,
   authMode: "login", renderedView: null, formKey: null,
   chatId: null, chatMsgs: [], unsubChat: null,
+  isAdmin: false, payouts: [], reports: [],
 };
 const unsubs = [];
 let lastDraft = null;
@@ -86,6 +95,7 @@ async function loadNames() {
   const ids = new Set();
   S.requests.forEach(r => { if (r.createdBy) ids.add(r.createdBy); if (r.helperId) ids.add(r.helperId); });
   Object.keys(S.helpers).forEach(id => ids.add(id));
+  S.payouts.forEach(p => ids.add(p.helperId)); S.reports.forEach(r => ids.add(r.by));
   const missing = [...ids].filter(id => !(id in S.names) && !nameReq.has(id));
   if (!missing.length) return;
   missing.forEach(id => nameReq.add(id));
@@ -125,6 +135,7 @@ function renderHeader() {
   if (inApp) {
     $("#c-open").textContent = S.loaded ? String(S.requests.filter(r => r.status === "offen").length) : "";
     $("#c-heroes").textContent = S.loaded ? String(Object.values(S.helpers).filter(h => h.active !== false).length) : "";
+    $("#tab-admin").hidden = !S.isAdmin;
     document.querySelectorAll("#tabs a").forEach(a => a.setAttribute("aria-current", a.dataset.view === view() ? "page" : "false"));
   }
 }
@@ -141,6 +152,7 @@ function renderBanner() {
 function feeHint(r) {
   const p = r.feeParts || {};
   const bits = ["Grundlohn"];
+  if (p.shops) bits.push("mehrere Läden");
   if (p.items) bits.push("viele Artikel");
   if (p.heavy) bits.push("schwer");
   if (p.express) bits.push("Express");
@@ -184,6 +196,7 @@ function card(r) {
       <span class="pill ${esc(r.status)}">${STATUS[r.status] || esc(r.status)}</span>
     </div>
     <h3>${esc(r.title || "Einkauf")}</h3>
+    ${Array.isArray(r.shops) && r.shops.length ? `<div class="shops">${r.shops.map(x => `<span>${esc(x)}</span>`).join("")}</div>` : ""}
     ${typeof r.fee === "number" ? `<div class="lohn"><div><span class="k">Heldenlohn</span><small>${esc(feeHint(r))}</small></div><b>${euro(earned(r))}</b></div>` : ""}
     <ul class="items">${items.map((it, i) => `<li class="${it.done ? "done" : ""}">${canTick
       ? `<input type="checkbox" id="it-${id}-${i}" data-act="tick" data-id="${id}" data-i="${i}"${it.done ? " checked" : ""}${busy}><label for="it-${id}-${i}"><span>${esc(it.t)}</span></label>`
@@ -192,7 +205,8 @@ function card(r) {
       <div><span class="k">Artikel</span><span>${r.status === "offen" ? items.length : `${doneCount}/${items.length}`}</span></div>
       <div><span class="k">Budget</span><span>${typeof r.budget === "number" ? "max. " + euro(r.budget) : "nach Kassenbon"}</span></div>
       <div><span class="k">Bezahlung</span><span>${esc(PAY[r.payment] || r.payment || "–")}</span></div>
-      ${typeof r.budget === "number" && typeof r.fee === "number" ? `<div><span class="k">Höchstens gesamt</span><span>${euro(r.budget + r.fee)}</span></div>` : ""}
+      ${svc(r) ? `<div><span class="k">Servicegebühr</span><span>${euro(svc(r))}</span></div>` : ""}
+      ${typeof r.budget === "number" && typeof r.fee === "number" ? `<div><span class="k">Höchstens gesamt</span><span>${euro(r.budget + r.fee + svc(r))}</span></div>` : ""}
     </div>
     ${r.note ? `<p class="note">${esc(r.note)}</p>` : ""}
     <div class="people">
@@ -215,11 +229,13 @@ function tarifPanel() {
     <p class="small">Jeder Einkauf bringt dem Helden einen festen, fairen Lohn. Er wird bei der Übergabe zusammen mit dem Einkauf bezahlt.</p>
     <dl class="tarif">
       <div><dt>Grundlohn je Einkauf</dt><dd>${euro(FEE.base)}</dd></div>
+      <div><dt>jeder weitere Laden</dt><dd>+ ${euro(FEE.extraShop)}</dd></div>
       <div><dt>ab dem ${FEE.freeItems + 1}. Artikel, je Stück</dt><dd>+ ${euro(FEE.perItem)}</dd></div>
       <div><dt>Schweres (Kisten, Säcke)</dt><dd>+ ${euro(FEE.heavy)}</dd></div>
       <div><dt>Express, noch heute</dt><dd>+ ${euro(FEE.express)}</dd></div>
       <div><dt>Extra und Trinkgeld</dt><dd>freiwillig</dd></div>
     </dl>
+    <p class="small">Dazu kommt eine Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf für den Betrieb von Einkaufshelden. Der Held nimmt sie bei der Übergabe mit und leitet sie weiter.</p>
   </section>`;
 }
 
@@ -291,7 +307,7 @@ function vOnboarding() {
 function vAuftraege() {
   const f = S.filter.trim().toLowerCase();
   let list = S.requests.filter(r => S.show === "alle" ? true : r.status === S.show);
-  if (f) list = list.filter(r => [r.area, r.title, ...(r.items || []).map(i => i.t)].join(" ").toLowerCase().includes(f));
+  if (f) list = list.filter(r => [r.area, r.title, ...(r.shops || []), ...(r.items || []).map(i => i.t)].join(" ").toLowerCase().includes(f));
   if (S.sort === "lohn") list = [...list].sort((a, b) => earned(b) - earned(a));
   if (S.sort === "dringend") list = [...list].sort((a, b) => String(a.due || "9999").localeCompare(String(b.due || "9999")));
   const body = list.length ? `<div class="grid">${list.map(card).join("")}</div>`
@@ -304,7 +320,7 @@ function vAuftraege() {
     </section>
     <div class="layout"><div>
       <div class="toolbar">
-        <input id="flt" type="search" placeholder="Stadtteil, PLZ oder Artikel" value="${esc(S.filter)}" aria-label="Aufträge filtern">
+        <input id="flt" type="search" placeholder="Stadtteil, PLZ, Laden oder Artikel" value="${esc(S.filter)}" aria-label="Aufträge filtern">
         <select id="sort" aria-label="Sortierung">
           <option value="neu"${S.sort === "neu" ? " selected" : ""}>Neueste zuerst</option>
           <option value="lohn"${S.sort === "lohn" ? " selected" : ""}>Bester Heldenlohn</option>
@@ -325,19 +341,28 @@ function formFee() {
   const heavy = el("r-heavy") ? el("r-heavy").checked : !!d.heavy;
   const due = el("r-due") ? el("r-due").value : (d.due || "");
   const extra = parseFloat(String(el("r-extra") ? el("r-extra").value : (d.extra || "")).replace(",", ".")) || 0;
-  return { items, p: calcFee(items, heavy, due, extra) };
+  const shops = el("reqForm") ? readShops() : (Array.isArray(d.shops) ? d.shops : []);
+  return { items, shops: shops.length, p: calcFee(items, heavy, due, extra, Math.max(1, shops.length)) };
+}
+function readShops() {
+  const picked = [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value);
+  const other = (($("#r-shop-other") || {}).value || "").split(",").map(x => x.trim().slice(0, 30)).filter(Boolean);
+  return [...new Set([...picked, ...other])].slice(0, MAX_SHOPS);
 }
 function calcHtml() {
-  const { items, p } = formFee();
+  const { items, shops, p } = formFee();
   const line = (k, v, show = true) => show ? `<div><span class="muted">${k}</span><span>${euro(v)}</span></div>` : "";
   return `<div><b>Heldenlohn für deinen Helden</b><span></span></div>
     ${line("Grundlohn", p.base)}
+    ${line(`${shops - 1} weitere${shops - 1 === 1 ? "r Laden" : " Läden"} × ${euro(FEE.extraShop)}`, p.shops, p.shops > 0)}
     ${line(`${items - FEE.freeItems} Artikel über ${FEE.freeItems} × ${euro(FEE.perItem)}`, p.items, p.items > 0)}
     ${line("Schwere Sachen", p.heavy, p.heavy > 0)}
     ${line("Express, noch heute", p.express, p.express > 0)}
     ${line("Extra von dir", p.extra, p.extra > 0)}
     <div class="sum"><span>Heldenlohn</span><span>${euro(p.total)}</span></div>
-    <div class="muted" style="font-size:12px">Zahlst du bei der Übergabe zusätzlich zum Betrag auf dem Kassenbon.</div>`;
+    <div><span class="muted">Servicegebühr Einkaufshelden</span><span>${euro(SERVICE_FEE)}</span></div>
+    <div class="sum"><span>Zusätzlich zum Kassenbon</span><span>${euro(p.total + SERVICE_FEE)}</span></div>
+    <div class="muted" style="font-size:12px">Zahlst du bei der Übergabe an deinen Helden, zusammen mit dem Betrag auf dem Kassenbon.</div>`;
 }
 
 function vHilfe() {
@@ -352,9 +377,10 @@ function vHilfe() {
       <label class="f">Worum geht's?<input id="r-title" required maxlength="80" placeholder="Wocheneinkauf, Apotheke, Getränke …" value="${esc(d.title || "")}"></label>
       <label class="f">Einkaufsliste <small>Ein Artikel pro Zeile</small>
         <textarea class="list" id="r-items" required placeholder="1 l Milch (3,5 %)&#10;6 Eier, Freiland&#10;Vollkornbrot&#10;2 kg Kartoffeln, festkochend">${esc(d.items || "")}</textarea></label>
-      <div class="row">
-        <label class="f">Stadtteil oder PLZ <small>Keine genaue Adresse</small><input id="r-area" required maxlength="60" placeholder="z. B. 50823 Ehrenfeld" value="${esc(d.area || "")}"></label>
-        <label class="f">Laden <small>Optional</small><input id="r-shop" maxlength="60" placeholder="egal, Supermarkt um die Ecke …" value="${esc(d.shop || "")}"></label>
+      <label class="f">Stadtteil oder PLZ <small>Keine genaue Adresse</small><input id="r-area" required maxlength="60" placeholder="z. B. 50823 Ehrenfeld" value="${esc(d.area || "")}"></label>
+      <div class="f" role="group" aria-labelledby="r-shops-l"><span id="r-shops-l" style="font-weight:600;font-size:14px">In welchen Läden? <small style="font-weight:400;color:var(--muted)">Mehrere möglich, bis zu ${MAX_SHOPS}. Jeder weitere Laden + ${euro(FEE.extraShop)} Heldenlohn.</small></span>
+        <div class="checks">${SHOPS.map(x => `<label><input type="checkbox" name="shop" value="${esc(x)}"${(d.shops || []).includes(x) ? " checked" : ""}>${esc(x)}</label>`).join("")}</div>
+        <input id="r-shop-other" maxlength="80" placeholder="Anderer Laden, z. B. Asia-Markt Venloer Str. (mehrere mit Komma)" value="${esc(d.shopOther || "")}" aria-label="Anderer Laden">
       </div>
       <div class="row">
         <label class="f">Bis wann?<input id="r-due" type="date" min="${todayISO()}" value="${esc(d.due || tomorrow)}"></label>
@@ -393,7 +419,65 @@ function earnBox(jobs) {
       <div><b>${euro(sum(pending))}</b><span>noch offen in ${pending.length} ${pending.length === 1 ? "Auftrag" : "Aufträgen"}</span></div>
     </div>
     <p class="small" style="margin-top:8px">Die App zählt nur mit. Das Geld bekommst du bei der Übergabe direkt von der Person, für die du einkaufst. Einnahmen musst du ggf. selbst versteuern.</p>
+  </section>
+  ${feeAccount(done)}`;
+}
+
+function feeAccount(done) {
+  const owed = round2(done.reduce((a, r) => a + svc(r), 0));
+  const paid = round2(S.payouts.filter(p => p.helperId === S.myId).reduce((a, p) => a + (p.amount || 0), 0));
+  const open = round2(Math.max(0, owed - paid));
+  if (!owed) return "";
+  const ways = [SITE.paypal ? `PayPal: <b class="sel">${esc(SITE.paypal)}</b>` : "", SITE.iban ? `Überweisung an ${todo(SITE.operatorName, "Name")}, IBAN <b class="sel">${esc(SITE.iban)}</b>` : ""].filter(Boolean);
+  return `<section>
+    <h2 class="section-title">Servicegebühren</h2>
+    <div class="earn">
+      <div><b>${euro(open)}</b><span>an Einkaufshelden zu überweisen</span></div>
+      <div><b>${euro(owed)}</b><span>eingesammelt bei ${(n => n + (n === 1 ? " Lieferung" : " Lieferungen"))(done.filter(r => svc(r)).length)}</span></div>
+      <div><b>${euro(paid)}</b><span>schon überwiesen</span></div>
+    </div>
+    <p class="small" style="margin-top:8px">Bei jeder Übergabe bekommst du ${euro(SERVICE_FEE)} Servicegebühr mit. Bitte überweise den offenen Betrag ${esc(SITE.payRhythm || "einmal im Monat")}${ways.length ? " – " + ways.join(" oder ") : ` – ${todo("", "Zahlungsweg in site-config.js eintragen")}`}. Verwendungszweck: <b class="sel">Einkaufshelden ${esc(S.profile ? S.profile.name : "")} ${esc(S.myId ? S.myId.slice(0, 6) : "")}</b></p>
   </section>`;
+}
+
+function vBetreiber() {
+  if (!S.isAdmin) return emptyBox("Kein Zugriff", "Dieser Bereich ist nur für den Betreiber.");
+  const per = {};
+  S.requests.forEach(r => {
+    if (r.status !== "erledigt" || !r.helperId || !svc(r)) return;
+    const x = per[r.helperId] || (per[r.helperId] = { n: 0, owed: 0, paid: 0 });
+    x.n++; x.owed += svc(r);
+  });
+  S.payouts.forEach(p => { const x = per[p.helperId] || (per[p.helperId] = { n: 0, owed: 0, paid: 0 }); x.paid += p.amount || 0; });
+  const rows = Object.entries(per).map(([id, x]) => ({ id, ...x, open: round2(Math.max(0, x.owed - x.paid)) })).sort((a, b) => b.open - a.open);
+  const tot = rows.reduce((a, r) => ({ owed: a.owed + r.owed, paid: a.paid + r.paid, open: a.open + r.open }), { owed: 0, paid: 0, open: 0 });
+  const month = todayISO().slice(0, 7);
+  const monthFees = S.requests.filter(r => r.status === "erledigt" && svc(r) && (() => { const d = toDate(r.doneAt); return d && d.toISOString().slice(0, 7) === month; })()).reduce((a, r) => a + svc(r), 0);
+  return `<section class="intro"><h1>Betreiber</h1><p>Deine Einnahmen aus der Servicegebühr von ${euro(SERVICE_FEE)} je Einkauf und gemeldete Aufträge.</p></section>
+    <div class="stack" style="padding-block:16px 56px">
+      <section><div class="earn">
+        <div><b>${euro(monthFees)}</b><span>Servicegebühren diesen Monat</span></div>
+        <div><b>${euro(tot.owed)}</b><span>insgesamt angefallen</span></div>
+        <div><b>${euro(tot.paid)}</b><span>bei dir eingegangen</span></div>
+        <div><b>${euro(tot.open)}</b><span>noch offen bei Helden</span></div>
+      </div></section>
+      <section>
+        <h2 class="section-title">Offene Beträge je Held</h2>
+        ${rows.length ? `<div class="tbl"><table>
+          <thead><tr><th>Held</th><th>Lieferungen</th><th>Angefallen</th><th>Bezahlt</th><th>Offen</th><th></th></tr></thead>
+          <tbody>${rows.map(r => `<tr><td>${esc(nameOf(r.id))}<br><small class="sel">${esc(r.id.slice(0, 6))}</small></td><td>${r.n}</td><td>${euro(r.owed)}</td><td>${euro(r.paid)}</td><td><b>${euro(r.open)}</b></td>
+            <td>${r.open > 0 ? `<button class="btn" data-act="payout" data-id="${esc(r.id)}" data-amount="${r.open}">${S.confirm === "pay-" + r.id ? "Eingang bestätigen?" : euro(r.open) + " erhalten"}</button>` : "✓"}</td></tr>`).join("")}</tbody>
+        </table></div>` : `<p class="small">Noch keine Servicegebühren angefallen.</p>`}
+        <p class="small">Wenn eine Überweisung bei dir angekommen ist, klick auf „erhalten“. Der Held sieht dann sofort, dass nichts mehr offen ist.</p>
+      </section>
+      <section>
+        <h2 class="section-title">Meldungen</h2>
+        ${S.reports.length ? `<div class="tbl"><table><thead><tr><th>Wann</th><th>Auftrag</th><th>Von</th><th></th></tr></thead><tbody>
+          ${S.reports.map(rep => { const r = S.requests.find(x => x.id === rep.requestId); return `<tr><td>${esc(ago(rep.at))}</td><td>${r ? esc(r.title) + " · " + esc(r.area) : "<small>schon gelöscht</small>"}</td><td>${esc(nameOf(rep.by))}</td>
+            <td style="white-space:nowrap">${r ? `<button class="btn ghost" data-act="admindel" data-id="${esc(r.id)}">${S.confirm === "adel-" + r.id ? "Auftrag löschen?" : "Auftrag löschen"}</button>` : ""}<button class="btn ghost" data-act="repdone" data-id="${esc(rep.id)}">Erledigt</button></td></tr>`; }).join("")}
+        </tbody></table></div>` : `<p class="small">Keine offenen Meldungen.</p>`}
+      </section>
+    </div>`;
 }
 
 function vMeine() {
@@ -491,7 +575,7 @@ function render() {
   const cur = view();
   const formKey = S.myId + "|" + ((S.helpers[S.myId] && "h") || "") + "|" + S.confirm;
   if ((cur === "hilfe" || cur === "held" || cur === "konto") && S.renderedView === cur && S.formKey === formKey && v.querySelector("form")) return;
-  v.innerHTML = ({ auftraege: vAuftraege, hilfe: vHilfe, meine: vMeine, held: vHeld, helden: vHelden, konto: vKonto })[cur]();
+  v.innerHTML = ({ auftraege: vAuftraege, hilfe: vHilfe, meine: vMeine, held: vHeld, helden: vHelden, konto: vKonto, betreiber: vBetreiber })[cur]();
   S.renderedView = cur; S.formKey = formKey;
   if (S.flash) { const m = $(S.flash.sel); if (m) { m.textContent = S.flash.text; m.className = "msg" + (S.flash.err ? " err" : ""); } S.flash = null; }
   if (focusId) { const el = document.getElementById(focusId); if (el && el !== document.activeElement) { el.focus(); try { if (selStart != null) el.setSelectionRange(selStart, selStart); } catch (e) {} } }
@@ -573,6 +657,19 @@ document.addEventListener("click", async (ev) => {
   const b = t.closest("button[data-act]");
   if (!b) return;
   const id = b.dataset.id, act = b.dataset.act;
+  const confirmOnce = (key) => {
+    if (S.confirm === key) { S.confirm = null; return true; }
+    S.confirm = key; S.renderedView = null; render();
+    setTimeout(() => { if (S.confirm === key) { S.confirm = null; S.renderedView = null; render(); } }, 4000);
+    return false;
+  };
+  if (act === "payout") {
+    if (!confirmOnce("pay-" + id)) return;
+    const amount = round2(Number(b.dataset.amount) || 0);
+    return withBusy("pay-" + id, () => addDoc(collection(db, "payouts"), { helperId: id, amount, by: S.myId, at: serverTimestamp() }));
+  }
+  if (act === "repdone") return withBusy("rep-" + id, () => deleteDoc(doc(db, "reports", id)));
+  if (act === "admindel") { if (!confirmOnce("adel-" + id)) return; return withBusy(id, () => deleteDoc(reqRef(id))); }
   const r = S.requests.find(x => x.id === id);
   if (!r) return;
   if (act === "take") return take(id);
@@ -612,7 +709,7 @@ document.addEventListener("input", (ev) => {
   }
   if (ev.target.closest("#reqForm")) {
     const c = $("#calc"); if (c) c.innerHTML = calcHtml();
-    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shop: $("#r-shop").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, payment: $("#r-pay").value, note: $("#r-note").value };
+    lastDraft = { heavy: $("#r-heavy").checked, extra: $("#r-extra").value, title: $("#r-title").value, items: $("#r-items").value, area: $("#r-area").value, shops: [...document.querySelectorAll("#reqForm input[name=shop]:checked")].map(i => i.value), shopOther: $("#r-shop-other").value, due: $("#r-due").value, window: $("#r-window").value, budget: $("#r-budget").value, payment: $("#r-pay").value, note: $("#r-note").value };
     try { localStorage.setItem("eh-draft", JSON.stringify(lastDraft)); } catch (e) {}
   }
 });
@@ -656,15 +753,19 @@ document.addEventListener("submit", async (ev) => {
     const items = $("#r-items").value.split("\n").map(s => s.trim().replace(/^[-*•·]\s*/, "")).filter(Boolean).slice(0, 60).map(t => ({ t: t.slice(0, 120), done: false }));
     if (!items.length) { setMsg("#r-msg", "Schreib mindestens einen Artikel auf die Liste.", true); return; }
     const b = parseFloat(String($("#r-budget").value).replace(",", "."));
-    const fee = calcFee(items.length, $("#r-heavy").checked, $("#r-due").value, parseFloat(String($("#r-extra").value).replace(",", ".")) || 0);
-    const shop = $("#r-shop").value.trim();
-    const note = [$("#r-note").value.trim(), shop ? "Laden: " + shop : ""].filter(Boolean).join("\n").slice(0, 500);
+    const shops = readShops();
+    if (document.querySelectorAll("#reqForm input[name=shop]:checked").length + ($("#r-shop-other").value.split(",").filter(x => x.trim()).length) > MAX_SHOPS) {
+      setMsg("#r-msg", `Bitte wähle höchstens ${MAX_SHOPS} Läden.`, true); return;
+    }
+    const fee = calcFee(items.length, $("#r-heavy").checked, $("#r-due").value, parseFloat(String($("#r-extra").value).replace(",", ".")) || 0, Math.max(1, shops.length));
+    const note = $("#r-note").value.trim().slice(0, 500);
     const data = {
       title: $("#r-title").value.trim().slice(0, 80), items,
       area: $("#r-area").value.trim().slice(0, 60), due: $("#r-due").value || null,
       window: $("#r-window").value, budget: isFinite(b) && b > 0 ? Math.min(round2(b), 1000) : null,
       payment: $("#r-pay").value, note,
-      fee: fee.total, feeParts: { base: fee.base, items: fee.items, heavy: fee.heavy, express: fee.express, extra: fee.extra },
+      shops, serviceFee: SERVICE_FEE,
+      fee: fee.total, feeParts: { base: fee.base, shops: fee.shops, items: fee.items, heavy: fee.heavy, express: fee.express, extra: fee.extra },
       status: "offen", createdBy: S.myId, helperId: null, thanks: false,
       createdAt: serverTimestamp(),
     };
@@ -764,7 +865,7 @@ async function deleteAccount() {
 }
 
 // ---------- Daten-Abos ----------
-function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); }
+function stopData() { while (unsubs.length) { try { unsubs.pop()(); } catch (e) {} } closeChat(); S.isAdmin = false; S.payouts = []; S.reports = []; }
 
 function startData() {
   stopData();
@@ -783,6 +884,22 @@ function startData() {
     S.loaded = true;
     render(); loadNames();
   }, (e) => { console.error(e); if (String(e.code).includes("permission")) return; S.error = "Die Aufträge konnten nicht geladen werden. Lade die Seite neu."; S.loaded = true; render(); }));
+
+  // Betreiber-Rechte: Dokument admins/{uid} wird von Hand in der Firebase-Konsole angelegt.
+  getDoc(doc(db, "admins", S.myId)).then(snap => {
+    S.isAdmin = snap.exists();
+    const payQ = S.isAdmin ? collection(db, "payouts") : query(collection(db, "payouts"), where("helperId", "==", S.myId));
+    unsubs.push(onSnapshot(payQ, (s) => {
+      S.payouts = s.docs.map(d => Object.assign({ id: d.id }, d.data()));
+      // Nur Ansichten ohne Formular neu aufbauen, damit nichts Eingetipptes verloren geht.
+      if (S.profile && ["meine", "betreiber"].includes(view())) S.renderedView = null;
+      render();
+    }, (e) => console.error(e)));
+    if (S.isAdmin) unsubs.push(onSnapshot(query(collection(db, "reports"), orderBy("at", "desc"), limit(200)), (s) => {
+      S.reports = s.docs.map(d => Object.assign({ id: d.id }, d.data({ serverTimestamps: "estimate" }))); render();
+    }, (e) => console.error(e)));
+    render();
+  }).catch(() => {});
 
   unsubs.push(onSnapshot(collection(db, "helpers"), (snap) => {
     const m = {}; snap.docs.forEach(d => { m[d.id] = d.data(); });

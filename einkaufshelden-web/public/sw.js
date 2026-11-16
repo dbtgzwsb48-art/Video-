@@ -1,6 +1,6 @@
 // Einfacher Service Worker: App-Hülle offline verfügbar, Daten kommen immer live von Firebase.
-const CACHE = "eh-v1";
-const SHELL = ["./", "index.html", "style.css", "app.js", "firebase-config.js", "manifest.webmanifest",
+const CACHE = "eh-v2";
+const SHELL = ["./", "index.html", "style.css", "app.js", "firebase-config.js", "site-config.js", "manifest.webmanifest",
   "vendor/firebase-app.js", "vendor/firebase-auth.js", "vendor/firebase-firestore.js", "icons/icon.svg"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", (e) => {
